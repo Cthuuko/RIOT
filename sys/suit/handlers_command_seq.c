@@ -295,6 +295,9 @@ static int _dtv_set_param(suit_manifest_t *manifest, int key,
             case SUIT_PARAMETER_URI:
                 ref = &comp->param_uri;
                 break;
+            case SUIT_PARAMETER_SESSION_KEY:
+                ref = &comp->param_session_key;
+                break;
             default:
                 LOG_DEBUG("Unsupported parameter %" PRIi32 "\n", param_key);
                 return SUIT_ERR_UNSUPPORTED;
