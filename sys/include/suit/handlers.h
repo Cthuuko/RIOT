@@ -103,6 +103,7 @@ extern "C" {
 #define SUIT_DIR_RUN_SEQUENCE          (30)
 #define SUIT_DIR_RUN_WITH_ARGS         (31)
 #define SUIT_DIR_SWAP                  (32)
+#define SUIT_DIR_DECRYPT_IMAGE         (33)
 /** @} */
 
 /**

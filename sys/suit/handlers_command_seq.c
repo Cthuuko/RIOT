@@ -298,6 +298,12 @@ static int _dtv_set_param(suit_manifest_t *manifest, int key,
             case SUIT_PARAMETER_SESSION_KEY:
                 ref = &comp->param_session_key;
                 break;
+            case SUIT_PARAMETER_SALT:
+                ref = &comp->param_salt;
+                break;
+            case SUIT_PARAMETER_EPHEMERAL_PUBLIC_KEY:
+                ref = &comp->param_ephemeral_public_key;
+                break;
             default:
                 LOG_DEBUG("Unsupported parameter %" PRIi32 "\n", param_key);
                 return SUIT_ERR_UNSUPPORTED;
@@ -604,6 +610,32 @@ static int _dtv_verify_image_match(suit_manifest_t *manifest, int key,
     return res;
 }
 
+static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
+                                   nanocbor_value_t *_it)
+{
+    (void)key; (void)_it;
+    
+    LOG_INFO("[DECRYPT IMAGE] TODO Actual Decryption\n");
+    
+    suit_component_t *comp = _get_component(manifest);
+
+    const uint8_t *session_key;
+    size_t session_key_len;
+    
+    nanocbor_value_t session_key_cbor;
+    suit_param_ref_to_cbor(manifest, &comp->param_session_key, &session_key_cbor);    
+    nanocbor_get_bstr(&session_key_cbor, &session_key, &session_key_len);
+
+    LOG_INFO("[DECRYPT IMAGE] READ SESSION KEY IN MANIFEST\n");
+    for (size_t i = 0; i < session_key_len; i++) {
+        printf("%02X", session_key[i]);
+    }
+    printf("\n");
+
+    
+    return 0;
+}
+
 /* begin{code-style-ignore} */
 const suit_manifest_handler_t suit_command_sequence_handlers[] = {
     [SUIT_COND_VENDOR_ID]        = _cond_vendor_handler,
@@ -616,6 +648,7 @@ const suit_manifest_handler_t suit_command_sequence_handlers[] = {
     [SUIT_DIR_OVERRIDE_PARAM]    = _dtv_set_param,
     [SUIT_DIR_FETCH]             = _dtv_fetch,
     [SUIT_DIR_RUN_SEQUENCE]      = _dtv_run_seq_cond,
+    [SUIT_DIR_DECRYPT_IMAGE]      = _dtv_decrypt_image
 };
 /* end{code-style-ignore} */
 
