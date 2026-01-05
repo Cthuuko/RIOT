@@ -37,6 +37,7 @@
 #include "suit.h"
 
 #include <uECC.h>
+#include "hashes/pbkdf2.h"
 #include "pub.h"
 #include "priv.h"
 #include "cose.h"
@@ -711,6 +712,10 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     const uint8_t *session_key;
     size_t session_key_len;
 
+
+    size_t nonce_size = 16;
+    size_t tag_size = 16;
+
     nanocbor_value_t session_key_cbor;
     suit_param_ref_to_cbor(manifest, &comp->param_session_key, &session_key_cbor);
     nanocbor_get_bstr(&session_key_cbor, &session_key, &session_key_len);
@@ -718,6 +723,41 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     LOG_INFO("[DECRYPT IMAGE] READ SESSION KEY IN MANIFEST\n");
     for (size_t i = 0; i < session_key_len; i++) {
         printf("%02X", session_key[i]);
+    }
+    printf("\n");
+
+    // Extract Nonce (first 16 bytes)
+    uint8_t nonce[nonce_size];
+    memcpy(nonce, session_key, nonce_size);
+
+    // Extract Tag (last 16 bytes)
+    uint8_t tag[tag_size];
+    memcpy(tag, session_key + nonce_size, tag_size);
+
+    // Extract Tag (last 16 bytes)
+    size_t ciphertext_size = session_key_len-nonce_size-tag_size;
+    uint8_t cipher[ciphertext_size];
+    memcpy(cipher, session_key + nonce_size + tag_size, ciphertext_size);
+
+    // Print the extracted Nonce
+    printf("Nonce: ");
+    for (size_t i = 0; i < nonce_size; i++) {
+        printf("%02X", nonce[i]);
+    }
+    printf("\n");
+
+    // Print the extracted Tag
+    printf("Tag: ");
+    for (size_t i = 0; i < tag_size; i++) {
+        printf("%02X", tag[i]);
+    }
+
+    printf("\n");
+
+    // Print the extracted cipher
+    printf("Cipher: ");
+    for (size_t i = 0; i < ciphertext_size; i++) {
+        printf("%02X", cipher[i]);
     }
     printf("\n");
 
@@ -735,7 +775,20 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
 
     printf("\n");
 
-    
+
+    uint8_t derived_key[32];
+
+    pbkdf2_sha256(secret1, sizeof(secret1), salt, salt_len, 200000, derived_key);
+
+    LOG_INFO("[DECRYPT IMAGE] READ DERIVED KEY\n");
+    for (size_t i = 0; i < 32; i++) {
+        printf("%02X", derived_key[i]);
+    }
+    printf("\n");
+
+
+
+
     return 0;
 }
 
