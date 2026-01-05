@@ -2,6 +2,9 @@
 
 /* user_settings.h : custom configuration for wolfcrypt/wolfSSL */
 
+// MES Config
+#define HAVE_AESGCM
+
 #ifdef __cplusplus
 extern "C" {
 #endif
