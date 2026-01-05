@@ -37,6 +37,8 @@
 #include "suit.h"
 
 #include <uECC.h>
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/aes.h>
 #include "hashes/pbkdf2.h"
 #include "pub.h"
 #include "priv.h"
@@ -715,6 +717,7 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
 
     size_t nonce_size = 16;
     size_t tag_size = 16;
+    size_t key_size = 32;
 
     nanocbor_value_t session_key_cbor;
     suit_param_ref_to_cbor(manifest, &comp->param_session_key, &session_key_cbor);
@@ -737,6 +740,7 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     // Extract Tag (last 16 bytes)
     size_t ciphertext_size = session_key_len-nonce_size-tag_size;
     uint8_t cipher[ciphertext_size];
+    uint8_t plaintext[ciphertext_size];
     memcpy(cipher, session_key + nonce_size + tag_size, ciphertext_size);
 
     // Print the extracted Nonce
@@ -776,19 +780,82 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     printf("\n");
 
 
-    uint8_t derived_key[32];
+    uint8_t derived_key[key_size];
 
     pbkdf2_sha256(secret1, sizeof(secret1), salt, salt_len, 200000, derived_key);
 
     LOG_INFO("[DECRYPT IMAGE] READ DERIVED KEY\n");
-    for (size_t i = 0; i < 32; i++) {
+    for (size_t i = 0; i < key_size; i++) {
         printf("%02X", derived_key[i]);
     }
     printf("\n");
 
+    Aes aes;
+
+    wc_AesInit(&aes, NULL, INVALID_DEVID);
+
+    // Set up AES key in the AES context
+    int ret = wc_AesGcmSetKey(&aes, derived_key, key_size);
+    if (ret != 0) {
+        printf("[ENCRYPT] AES key setup failed! Error: %d\n", ret);
+        wc_AesFree(&aes);
+        return -1;
+    }
+
+    ret = wc_AesGcmDecrypt(&aes, plaintext, cipher, ciphertext_size, nonce, nonce_size, tag, tag_size, NULL, 0);
+    if (ret != 0) {
+        printf("[ENCRYPT] Decryption failed! Error: %d\n", ret);
+        wc_AesFree(&aes);
+        return -1;
+    }
+
+    LOG_INFO("[DECRYPT IMAGE] READ ENCRYPTION KEY\n");
+    for (size_t i = 0; i < ciphertext_size; i++) {
+        printf("%02X", plaintext[i]);
+    }
+
+    printf("\n");
 
 
+    if (suit_storage_has_readptr(comp->storage_backend)) {
+        const uint8_t *buf;
+        size_t available;
+        suit_storage_read_ptr(comp->storage_backend, &buf, &available);
 
+        // Set up AES key in the AES context
+        int ret = wc_AesSetKey(&aes, plaintext, ciphertext_size, NULL, AES_DECRYPTION);
+        if (ret != 0) {
+            printf("[ENCRYPT] AES key setup failed! Error: %d\n", ret);
+            wc_AesFree(&aes);
+            return -1;
+        }
+
+        uint8_t data[available];
+
+        ret = wc_AesCbcDecrypt(&aes, data, buf, available);
+        if (ret != 0) {
+            printf("[ENCRYPT] Decryption failed! Error: %d\n", ret);
+            wc_AesFree(&aes);
+            return -1;
+        }
+
+        LOG_INFO("[DECRYPT IMAGE] DECRYPTED FIRMWARE\n");
+        for (size_t i = 0; i < available; i++) {
+            printf("%02X", data[i]);
+        }
+
+        printf("\n");
+
+        LOG_INFO("Replacing encrypted payload with decrypted one\n");
+        if (comp->storage_backend->driver->erase) {
+            suit_storage_erase(comp->storage_backend);
+            suit_storage_start(comp->storage_backend, manifest, available);
+            suit_storage_write(comp->storage_backend, manifest, data, 0, available);
+            suit_storage_finish(comp->storage_backend, manifest);
+        }
+    }
+
+    wc_AesFree(&aes);
     return 0;
 }
 
