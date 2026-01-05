@@ -93,3 +93,9 @@ suit/notify: | $(filter suit/publish, $(MAKECMDGOALS))
 	aiocoap-client -m POST "coap://$(SUIT_CLIENT)/suit/trigger" \
 		--payload "$(SUIT_COAP_ROOT)/$(SUIT_NOTIFY_MANIFEST)" && \
 		echo "Triggered $(SUIT_CLIENT) to update."
+
+suit/mes-notify: | $(filter suit/publish, $(MAKECMDGOALS))
+	$(Q)test -n "$(SUIT_CLIENT)" || { echo "error: SUIT_CLIENT unset!"; false; }
+	aiocoap-client -m POST "coap://$(SUIT_CLIENT)/suit/trigger" \
+		--payload "coap://$(SUIT_COAP_SERVER)/suit_manifest.signed" && \
+		echo "Triggered $(SUIT_CLIENT) to update."

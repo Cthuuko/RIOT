@@ -44,7 +44,9 @@ static ssize_t _trigger_handler(coap_pkt_t *pkt, uint8_t *buf, size_t len,
         else {
             code = COAP_CODE_CREATED;
             LOG_INFO("suit: received URL: \"%s\"\n", (char *)pkt->payload);
-            suit_worker_trigger((char *)pkt->payload, strlen((char *)pkt->payload));
+            // MES: Somehow the payload adds 001, so we're going to ignore it.
+            int correction = 3;
+            suit_worker_trigger((char *)pkt->payload, strlen((char *)pkt->payload) - correction);
         }
     }
     else {
