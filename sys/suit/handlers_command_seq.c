@@ -624,8 +624,23 @@ static int _dtv_verify_image_match(suit_manifest_t *manifest, int key,
 static int _load_public_key(void *arg, size_t offset, uint8_t *buf, size_t len,
                            int more)
 {
-    (void) arg; (void) offset; (void) buf; (void) len; (void) more;
-    LOG_INFO("DO SOME STUFF");
+    (void) offset; (void) more;
+
+    LOG_INFO("[LOADING PUB KEY] Reading pub key..\n");
+
+    uint8_t* eph_key = (uint8_t*) arg;
+
+    printf("hex string length. %ld\n", ((len-1) % 2));
+
+    if ((len-1) % 2 != 0) {
+        printf("Invalid hex string length.\n");
+        return -1;
+    }
+
+    for (size_t i = 0; i < (len-1) / 2; ++i) {
+        sscanf((char *)(buf + 2 * i), "%2hhx", &eph_key[i]);
+    }
+
     return 0;
 }
 
@@ -665,6 +680,37 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
 
     uECC_set_rng(&default_CSPRNG);
 
+    const uint8_t *ephemeral_public_key_path;
+    size_t ephemeral_public_key_path_len;
+
+    nanocbor_value_t public_key_cbor;
+    suit_param_ref_to_cbor(manifest, &comp->param_ephemeral_public_key, &public_key_cbor);
+    nanocbor_get_tstr(&public_key_cbor, &ephemeral_public_key_path, &ephemeral_public_key_path_len);
+
+    char eph_key[ephemeral_public_key_path_len];
+
+    LOG_INFO("[DECRYPT IMAGE] READ PUBLIC KEY IN MANIFEST\n");
+    for (size_t i = 0; i < ephemeral_public_key_path_len; i++) {
+        eph_key[i] = ephemeral_public_key_path[i];
+    }
+
+    eph_key[ephemeral_public_key_path_len]  = '\0';
+
+    printf("THE URL: %s\n", eph_key);
+
+    uint8_t eph_public_key[128];
+
+    int ret = nanocoap_get_blockwise_url(eph_key, COAP_BLOCKSIZE_512, _load_public_key, eph_public_key);
+
+    for (size_t i = 0; i < 128; i++) {
+        printf("%c", eph_public_key[i]);
+    }
+
+    if (ret != 0) {
+        printf("[GET PUB KEY] Fetching ephemeral pub key failed! Error: %d\n", ret);
+        return -1;
+    }
+
     // Print private key
     printf("Private Key: ");
     print_hex(priv_key_der, sizeof(priv_key_der));
@@ -672,10 +718,10 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     // Print public key
     // Public Key is loaded for test purposes
     printf("Public Key: ");
-    print_hex(pub_key_der, sizeof(pub_key_der));
+    print_hex(eph_public_key, sizeof(eph_public_key));
 
     // Compute the shared secret using the secp256r1 curve
-    int r = uECC_shared_secret(pub_key_der, priv_key_der, secret1, uECC_secp256r1());
+    int r = uECC_shared_secret(eph_public_key, priv_key_der, secret1, uECC_secp256r1());
     printf("[SHARED SECRET] Shared secret\n");
 
     if (r == 0) {
@@ -686,30 +732,6 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     // Print shared secret
     printf("[Shared Secret] ");
     print_hex(secret1, sizeof(secret1));
-
-
-    const uint8_t *ephemeral_public_key_path;
-    size_t ephemeral_public_key_path_len;
-
-    nanocbor_value_t public_key_cbor;
-    suit_param_ref_to_cbor(manifest, &comp->param_ephemeral_public_key, &public_key_cbor);
-    nanocbor_get_tstr(&public_key_cbor, &ephemeral_public_key_path, &ephemeral_public_key_path_len);
-
-    char eph_key[ephemeral_public_key_path_len+1];
-
-    LOG_INFO("[DECRYPT IMAGE] READ PUBLIC KEY IN MANIFEST\n");
-    for (size_t i = 0; i < ephemeral_public_key_path_len; i++) {
-        eph_key[i] = ephemeral_public_key_path[i];
-        printf("%c", ephemeral_public_key_path[i]);
-    }
-    eph_key[ephemeral_public_key_path_len+1] = '\0';
-
-    printf("\n");
-
-    printf("%s\n", eph_key);
-
-    // TODO
-    nanocoap_get_blockwise_url(eph_key, CONFIG_SUIT_COAP_BLOCKSIZE, _load_public_key, NULL);
 
     const uint8_t *session_key;
     size_t session_key_len;
@@ -795,7 +817,7 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     wc_AesInit(&aes, NULL, INVALID_DEVID);
 
     // Set up AES key in the AES context
-    int ret = wc_AesGcmSetKey(&aes, derived_key, key_size);
+    ret = wc_AesGcmSetKey(&aes, derived_key, key_size);
     if (ret != 0) {
         printf("[ENCRYPT] AES key setup failed! Error: %d\n", ret);
         wc_AesFree(&aes);
