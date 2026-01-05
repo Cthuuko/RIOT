@@ -25,6 +25,9 @@ USEMODULE += shell
 USEMODULE += shell_cmds_default
 USEMODULE += shell_cmd_suit
 
+# MES additions
+USEPKG += micro-ecc
+
 # Set this to 1 to enable code in RIOT that does safety checking
 # which is not needed in a production environment but helps in the
 # development process:

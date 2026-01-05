@@ -36,6 +36,14 @@
 #include "suit/storage.h"
 #include "suit.h"
 
+#include <uECC.h>
+#include "pub.h"
+#include "priv.h"
+#include "cose.h"
+#include "cose/intern.h"
+#include "cose/crypto.h"
+#include "cose/crypto/selectors.h"
+
 #ifdef MODULE_SUIT_TRANSPORT_COAP
 #include "suit/transport/coap.h"
 #include "net/nanocoap_sock.h"
@@ -610,26 +618,121 @@ static int _dtv_verify_image_match(suit_manifest_t *manifest, int key,
     return res;
 }
 
+static int _load_public_key(void *arg, size_t offset, uint8_t *buf, size_t len,
+                           int more)
+{
+    (void) arg; (void) offset; (void) buf; (void) len; (void) more;
+    LOG_INFO("DO SOME STUFF");
+    return 0;
+}
+
+// Parse private key from DER and extract the 32-byte scalar
+static void print_hex(const uint8_t *data, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        printf("0x%02x", data[i]);
+        if (i < len - 1) {
+            printf(", ");
+        }
+    }
+    printf("\n");
+}
+
+
+
+extern cose_crypt_rng cose_crypt_get_random;
+extern void *cose_crypt_rng_arg;
+
+/* tinycrypt random function */
+int default_CSPRNG(uint8_t *dest, unsigned size)
+{
+    cose_crypt_get_random(cose_crypt_rng_arg, dest, size);
+    return 1;
+}
+
 static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
                                    nanocbor_value_t *_it)
 {
     (void)key; (void)_it;
-    
+
     LOG_INFO("[DECRYPT IMAGE] TODO Actual Decryption\n");
-    
+
     suit_component_t *comp = _get_component(manifest);
+
+    uint8_t secret1[32];   // Shared secret (32 bytes for secp256r1)
+
+    uECC_set_rng(&default_CSPRNG);
+
+    // Print private key
+    printf("Private Key: ");
+    print_hex(priv_key_der, sizeof(priv_key_der));
+
+    // Print public key
+    // Public Key is loaded for test purposes
+    printf("Public Key: ");
+    print_hex(pub_key_der, sizeof(pub_key_der));
+
+    // Compute the shared secret using the secp256r1 curve
+    int r = uECC_shared_secret(pub_key_der, priv_key_der, secret1, uECC_secp256r1());
+    printf("[SHARED SECRET] Shared secret\n");
+
+    if (r == 0) {
+        printf("[SHARED SECRET] shared_secret() failed (1)\n");
+        return -1;
+    }
+
+    // Print shared secret
+    printf("[Shared Secret] ");
+    print_hex(secret1, sizeof(secret1));
+
+
+    const uint8_t *ephemeral_public_key_path;
+    size_t ephemeral_public_key_path_len;
+
+    nanocbor_value_t public_key_cbor;
+    suit_param_ref_to_cbor(manifest, &comp->param_ephemeral_public_key, &public_key_cbor);
+    nanocbor_get_tstr(&public_key_cbor, &ephemeral_public_key_path, &ephemeral_public_key_path_len);
+
+    char eph_key[ephemeral_public_key_path_len+1];
+
+    LOG_INFO("[DECRYPT IMAGE] READ PUBLIC KEY IN MANIFEST\n");
+    for (size_t i = 0; i < ephemeral_public_key_path_len; i++) {
+        eph_key[i] = ephemeral_public_key_path[i];
+        printf("%c", ephemeral_public_key_path[i]);
+    }
+    eph_key[ephemeral_public_key_path_len+1] = '\0';
+
+    printf("\n");
+
+    printf("%s\n", eph_key);
+
+    // TODO
+    nanocoap_get_blockwise_url(eph_key, CONFIG_SUIT_COAP_BLOCKSIZE, _load_public_key, NULL);
 
     const uint8_t *session_key;
     size_t session_key_len;
-    
+
     nanocbor_value_t session_key_cbor;
-    suit_param_ref_to_cbor(manifest, &comp->param_session_key, &session_key_cbor);    
+    suit_param_ref_to_cbor(manifest, &comp->param_session_key, &session_key_cbor);
     nanocbor_get_bstr(&session_key_cbor, &session_key, &session_key_len);
 
     LOG_INFO("[DECRYPT IMAGE] READ SESSION KEY IN MANIFEST\n");
     for (size_t i = 0; i < session_key_len; i++) {
         printf("%02X", session_key[i]);
     }
+    printf("\n");
+
+    const uint8_t *salt;
+    size_t salt_len;
+
+    nanocbor_value_t salt_cbor;
+    suit_param_ref_to_cbor(manifest, &comp->param_salt, &salt_cbor);
+    nanocbor_get_bstr(&salt_cbor, &salt, &salt_len);
+
+    LOG_INFO("[DECRYPT IMAGE] READ SALT IN MANIFEST\n");
+    for (size_t i = 0; i < salt_len; i++) {
+        printf("%02X", salt[i]);
+    }
+
     printf("\n");
 
     
