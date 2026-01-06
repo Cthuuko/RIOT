@@ -37,7 +37,6 @@
 #include "suit.h"
 
 #include <uECC.h>
-#include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/aes.h>
 #include "hashes/pbkdf2.h"
 #include "pub.h"
@@ -630,32 +629,26 @@ static int _load_public_key(void *arg, size_t offset, uint8_t *buf, size_t len,
 
     uint8_t* eph_key = (uint8_t*) arg;
 
-    printf("hex string length. %ld\n", ((len-1) % 2));
-
     if ((len-1) % 2 != 0) {
         printf("Invalid hex string length.\n");
         return -1;
     }
 
     for (size_t i = 0; i < (len-1) / 2; ++i) {
-        sscanf((char *)(buf + 2 * i), "%2hhx", &eph_key[i]);
+        char hex_pair[3] = {0};
+        memcpy(hex_pair, &buf[2 * i], 2);
+        char *endptr;
+        long int byte_value = strtol(hex_pair, &endptr, 16);
+        if (*endptr != '\0') {
+            printf("Error: Invalid hex pair '%s' at index %zu\n", hex_pair, i);
+            return -1;
+        }
+
+        eph_key[i] = (uint8_t) byte_value;
     }
 
     return 0;
 }
-
-// Parse private key from DER and extract the 32-byte scalar
-static void print_hex(const uint8_t *data, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        printf("0x%02x", data[i]);
-        if (i < len - 1) {
-            printf(", ");
-        }
-    }
-    printf("\n");
-}
-
-
 
 extern cose_crypt_rng cose_crypt_get_random;
 extern void *cose_crypt_rng_arg;
@@ -672,7 +665,7 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
 {
     (void)key; (void)_it;
 
-    LOG_INFO("[DECRYPT IMAGE] TODO Actual Decryption\n");
+    LOG_INFO("[DECRYPT IMAGE] Start decryption\n");
 
     suit_component_t *comp = _get_component(manifest);
 
@@ -696,42 +689,24 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
 
     eph_key[ephemeral_public_key_path_len]  = '\0';
 
-    printf("THE URL: %s\n", eph_key);
-
     uint8_t eph_public_key[128];
 
     int ret = nanocoap_get_blockwise_url(eph_key, COAP_BLOCKSIZE_512, _load_public_key, eph_public_key);
 
-    for (size_t i = 0; i < 128; i++) {
-        printf("%c", eph_public_key[i]);
-    }
+    LOG_INFO("[GET PUB KEY] Finished reading: %d\n", ret);
 
     if (ret != 0) {
         printf("[GET PUB KEY] Fetching ephemeral pub key failed! Error: %d\n", ret);
         return -1;
     }
 
-    // Print private key
-    printf("Private Key: ");
-    print_hex(priv_key_der, sizeof(priv_key_der));
-
-    // Print public key
-    // Public Key is loaded for test purposes
-    printf("Public Key: ");
-    print_hex(eph_public_key, sizeof(eph_public_key));
-
     // Compute the shared secret using the secp256r1 curve
     int r = uECC_shared_secret(eph_public_key, priv_key_der, secret1, uECC_secp256r1());
-    printf("[SHARED SECRET] Shared secret\n");
 
     if (r == 0) {
         printf("[SHARED SECRET] shared_secret() failed (1)\n");
         return -1;
     }
-
-    // Print shared secret
-    printf("[Shared Secret] ");
-    print_hex(secret1, sizeof(secret1));
 
     const uint8_t *session_key;
     size_t session_key_len;
@@ -746,46 +721,20 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     nanocbor_get_bstr(&session_key_cbor, &session_key, &session_key_len);
 
     LOG_INFO("[DECRYPT IMAGE] READ SESSION KEY IN MANIFEST\n");
-    for (size_t i = 0; i < session_key_len; i++) {
-        printf("%02X", session_key[i]);
-    }
-    printf("\n");
 
     // Extract Nonce (first 16 bytes)
     uint8_t nonce[nonce_size];
     memcpy(nonce, session_key, nonce_size);
 
-    // Extract Tag (last 16 bytes)
+    // Extract Tag (next 16 bytes)
     uint8_t tag[tag_size];
     memcpy(tag, session_key + nonce_size, tag_size);
 
-    // Extract Tag (last 16 bytes)
+    // Extract Cipher (remaining)
     size_t ciphertext_size = session_key_len-nonce_size-tag_size;
     uint8_t cipher[ciphertext_size];
     uint8_t plaintext[ciphertext_size];
     memcpy(cipher, session_key + nonce_size + tag_size, ciphertext_size);
-
-    // Print the extracted Nonce
-    printf("Nonce: ");
-    for (size_t i = 0; i < nonce_size; i++) {
-        printf("%02X", nonce[i]);
-    }
-    printf("\n");
-
-    // Print the extracted Tag
-    printf("Tag: ");
-    for (size_t i = 0; i < tag_size; i++) {
-        printf("%02X", tag[i]);
-    }
-
-    printf("\n");
-
-    // Print the extracted cipher
-    printf("Cipher: ");
-    for (size_t i = 0; i < ciphertext_size; i++) {
-        printf("%02X", cipher[i]);
-    }
-    printf("\n");
 
     const uint8_t *salt;
     size_t salt_len;
@@ -795,22 +744,11 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     nanocbor_get_bstr(&salt_cbor, &salt, &salt_len);
 
     LOG_INFO("[DECRYPT IMAGE] READ SALT IN MANIFEST\n");
-    for (size_t i = 0; i < salt_len; i++) {
-        printf("%02X", salt[i]);
-    }
-
-    printf("\n");
-
 
     uint8_t derived_key[key_size];
 
-    pbkdf2_sha256(secret1, sizeof(secret1), salt, salt_len, 200000, derived_key);
-
-    LOG_INFO("[DECRYPT IMAGE] READ DERIVED KEY\n");
-    for (size_t i = 0; i < key_size; i++) {
-        printf("%02X", derived_key[i]);
-    }
-    printf("\n");
+    LOG_INFO("[DECRYPT IMAGE] START DERIVING KEY\n");
+    pbkdf2_sha256(secret1, sizeof(secret1), salt, salt_len, 10000, derived_key);
 
     Aes aes;
 
@@ -832,12 +770,6 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
     }
 
     LOG_INFO("[DECRYPT IMAGE] READ ENCRYPTION KEY\n");
-    for (size_t i = 0; i < ciphertext_size; i++) {
-        printf("%02X", plaintext[i]);
-    }
-
-    printf("\n");
-
 
     if (suit_storage_has_readptr(comp->storage_backend)) {
         const uint8_t *buf;
@@ -861,18 +793,13 @@ static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
             return -1;
         }
 
-        LOG_INFO("[DECRYPT IMAGE] DECRYPTED FIRMWARE\n");
-        for (size_t i = 0; i < available; i++) {
-            printf("%02X", data[i]);
-        }
-
-        printf("\n");
-
-        LOG_INFO("Replacing encrypted payload with decrypted one\n");
+        LOG_INFO("[DECRYPTING] Replacing encrypted payload with decrypted one\n");
         if (comp->storage_backend->driver->erase) {
             suit_storage_erase(comp->storage_backend);
             suit_storage_start(comp->storage_backend, manifest, available);
             suit_storage_write(comp->storage_backend, manifest, data, 0, available);
+            suit_storage_install(comp->storage_backend, manifest);
+            suit_component_set_flag(comp, SUIT_COMPONENT_STATE_INSTALLED);
             suit_storage_finish(comp->storage_backend, manifest);
         }
     }

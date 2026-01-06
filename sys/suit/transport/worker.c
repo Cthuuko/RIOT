@@ -136,6 +136,10 @@ int suit_handle_manifest_buf(const uint8_t *buffer, size_t size)
     }
 
 #ifdef MODULE_SUIT_STORAGE_FLASHWRITE
+    #ifdef MODULE_SUIT_STORAGE_RAM
+        LOG_INFO("[HANDLE MANIFEST] RAM Storage enabled. Skipping Flash Write\n");
+        return res;
+    #endif
     const riotboot_hdr_t *hdr = riotboot_slot_get_hdr(riotboot_slot_other());
     riotboot_hdr_print(hdr);
     ztimer_sleep(ZTIMER_MSEC, 1 * MS_PER_SEC);
