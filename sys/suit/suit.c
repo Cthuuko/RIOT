@@ -34,6 +34,8 @@
 #define ENABLE_DEBUG 0
 #include "debug.h"
 
+#include "shell.h"
+
 int suit_parse(suit_manifest_t *manifest, const uint8_t *buf,
                   size_t len)
 {
@@ -47,3 +49,12 @@ int suit_parse(suit_manifest_t *manifest, const uint8_t *buf,
                                           suit_envelope_handlers,
                                           suit_envelope_handlers_len);
 }
+
+static int _mes_echo_command(int argc, char **argv)
+{
+    (void) argc; (void) argv;
+    LOG_INFO("HELLO_WORLD\n");
+    return 0;
+}
+
+SHELL_COMMAND(mes_echo, "MES echo a message", _mes_echo_command);

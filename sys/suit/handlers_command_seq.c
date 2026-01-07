@@ -39,7 +39,6 @@
 #include <uECC.h>
 #include <wolfssl/wolfcrypt/aes.h>
 #include "hashes/pbkdf2.h"
-#include "pub.h"
 #include "priv.h"
 #include "cose.h"
 #include "cose/intern.h"
