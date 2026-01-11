@@ -91,8 +91,6 @@ ifeq (1,$(USE_ETHOS))
   IFACE ?= riot0
   TERMPROG = $(RIOTTOOLS)/ethos/ethos
   TERMFLAGS = $(IFACE) $(PORT)
-
-  CFLAGS += -DCONFIG_SUIT_STORAGE_RAM_REGIONS=2 -DCONFIG_SUIT_STORAGE_RAM_SIZE=2048
 else
   USEMODULE += netdev_default
 endif
