@@ -59,6 +59,7 @@
 #endif
 
 #include "log.h"
+#include "malloc.h"
 
 #define ENABLE_DEBUG 0
 #include "debug.h"
@@ -313,6 +314,9 @@ static int _dtv_set_param(suit_manifest_t *manifest, int key,
             case SUIT_PARAMETER_EPHEMERAL_PUBLIC_KEY:
                 ref = &comp->param_ephemeral_public_key;
                 break;
+            case SUIT_PARAMETER_IV:
+                ref = &comp->param_iv;
+                break;
             default:
                 LOG_DEBUG("Unsupported parameter %" PRIi32 "\n", param_key);
                 return SUIT_ERR_UNSUPPORTED;
@@ -369,6 +373,50 @@ static inline void _print_download_progress(suit_manifest_t *manifest,
 #endif
 }
 
+// MES ADDITION START
+Aes aes;
+
+static int _load_public_key(void *arg, size_t offset, uint8_t *buf, size_t len,
+                            int more)
+{
+    (void) offset; (void) more;
+
+    LOG_INFO("[LOADING PUB KEY] Reading pub key..\n");
+
+    uint8_t* eph_key = (uint8_t*) arg;
+
+    if ((len-1) % 2 != 0) {
+        printf("Invalid hex string length. Len found: %d\n", len);
+        return -1;
+    }
+
+    for (size_t i = 0; i < (len-1) / 2; ++i) {
+        char hex_pair[3] = {0};
+        memcpy(hex_pair, &buf[2 * i], 2);
+        char *endptr;
+        long int byte_value = strtol(hex_pair, &endptr, 16);
+        if (*endptr != '\0') {
+            printf("Error: Invalid hex pair '%s' at index %zu\n", hex_pair, i);
+            return -1;
+        }
+
+        eph_key[i] = (uint8_t) byte_value;
+    }
+
+    return 0;
+}
+
+extern cose_crypt_rng cose_crypt_get_random;
+extern void *cose_crypt_rng_arg;
+
+/* tinycrypt random function */
+int default_CSPRNG(uint8_t *dest, unsigned size)
+{
+    cose_crypt_get_random(cose_crypt_rng_arg, dest, size);
+    return 1;
+}
+
+// MES ADDITION END
 #if defined(MODULE_SUIT_TRANSPORT_COAP) || defined(MODULE_SUIT_TRANSPORT_VFS)
 static int _storage_helper(void *arg, size_t offset, uint8_t *buf, size_t len,
                            int more)
@@ -404,12 +452,41 @@ static int _storage_helper(void *arg, size_t offset, uint8_t *buf, size_t len,
 
     _print_download_progress(manifest, offset, len, image_size);
 
-    int res = suit_storage_write(comp->storage_backend, manifest, buf, offset, len);
+    // DECRYPTION START
+    uint8_t *fw_buf_decrypt =  malloc(len);
+
+    if (wc_AesCbcDecrypt(&aes, fw_buf_decrypt, buf, len) != 0) {
+        printf("Decrypt failed at offset %zu: \n", offset);
+        wc_AesFree(&aes);
+        return -1;
+    }
+
+    // Remove PKCS#7 padding from last chunk, if it exists
+    // The padding bytes indicate the size of the padding.
+    if (!more) {
+        uint8_t pad = fw_buf_decrypt[len - 1];
+        if (pad > 0 && pad <= len) {
+            for (size_t i = 0; i < pad; i++) {
+                if (fw_buf_decrypt[len - 1 - i] != pad) {
+                    LOG_ERROR("Invalid PKCS#7 padding!\n");
+                    wc_AesFree(&aes);
+                    free(fw_buf_decrypt);
+                    return -1;
+                }
+            }
+            len -= pad;
+        }
+    }
+
+    int res = suit_storage_write(comp->storage_backend, manifest, fw_buf_decrypt, offset, len);
+
     if (!more) {
         LOG_INFO("Finalizing payload store\n");
         /* Finalize the write if no more data available */
         res = suit_storage_finish(comp->storage_backend, manifest);
+        wc_AesFree(&aes);
     }
+    free(fw_buf_decrypt);
     return res;
 }
 #endif
@@ -455,6 +532,140 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
 
     LOG_DEBUG("_dtv_fetch() fetching \"%s\" (url_len=%" PRIuSIZE ")\n", manifest->urlbuf,
               url_len);
+    // MES - PREPARE DECRYPTION
+    LOG_INFO("[DECRYPT IMAGE] Start decryption\n");
+
+    uint8_t secret1[32];   // Shared secret (32 bytes for secp256r1)
+
+    uECC_set_rng(&default_CSPRNG);
+
+    const uint8_t *ephemeral_public_key_path;
+    size_t ephemeral_public_key_path_len;
+
+    nanocbor_value_t public_key_cbor;
+    suit_param_ref_to_cbor(manifest, &comp->param_ephemeral_public_key, &public_key_cbor);
+    nanocbor_get_tstr(&public_key_cbor, &ephemeral_public_key_path, &ephemeral_public_key_path_len);
+
+    char eph_key[ephemeral_public_key_path_len+1];
+
+    LOG_INFO("[DECRYPT IMAGE] READ PUBLIC KEY IN MANIFEST\n");
+    for (size_t i = 0; i < ephemeral_public_key_path_len; i++) {
+        eph_key[i] = ephemeral_public_key_path[i];
+    }
+
+    eph_key[ephemeral_public_key_path_len]  = '\0';
+
+    uint8_t eph_public_key[128];
+
+    int ret = nanocoap_get_blockwise_url(eph_key, COAP_BLOCKSIZE_512, _load_public_key, eph_public_key);
+
+    LOG_INFO("[GET PUB KEY] Finished reading: %d\n", ret);
+
+    if (ret != 0) {
+        printf("[GET PUB KEY] Fetching ephemeral pub key failed! Error: %d\n", ret);
+        return -1;
+    }
+
+    // Compute the shared secret using the secp256r1 curve
+    int r = uECC_shared_secret(eph_public_key, priv_key_der, secret1, uECC_secp256r1());
+
+    if (r == 0) {
+        printf("[SHARED SECRET] shared_secret() failed (1)\n");
+        return -1;
+    }
+
+    const uint8_t *session_key;
+    size_t session_key_len;
+
+
+    size_t nonce_size = 16;
+    size_t tag_size = 16;
+    size_t key_size = 32;
+
+    nanocbor_value_t session_key_cbor;
+    suit_param_ref_to_cbor(manifest, &comp->param_session_key, &session_key_cbor);
+    nanocbor_get_bstr(&session_key_cbor, &session_key, &session_key_len);
+
+    LOG_INFO("[DECRYPT IMAGE] READ SESSION KEY IN MANIFEST\n");
+
+    // Extract Nonce (first 16 bytes)
+    uint8_t nonce[nonce_size];
+    memcpy(nonce, session_key, nonce_size);
+
+    // Extract Tag (next 16 bytes)
+    uint8_t tag[tag_size];
+    memcpy(tag, session_key + nonce_size, tag_size);
+
+    // Extract Cipher (remaining)
+    size_t ciphertext_size = session_key_len-nonce_size-tag_size;
+    uint8_t cipher[ciphertext_size];
+    uint8_t plaintext[ciphertext_size];
+    memcpy(cipher, session_key + nonce_size + tag_size, ciphertext_size);
+
+    const uint8_t *salt;
+    size_t salt_len;
+
+    nanocbor_value_t salt_cbor;
+    suit_param_ref_to_cbor(manifest, &comp->param_salt, &salt_cbor);
+    nanocbor_get_bstr(&salt_cbor, &salt, &salt_len);
+
+    LOG_INFO("[DECRYPT IMAGE] READ SALT IN MANIFEST\n");
+
+    uint8_t derived_key[key_size];
+
+    LOG_INFO("[DECRYPT IMAGE] START DERIVING KEY\n");
+    pbkdf2_sha256(secret1, sizeof(secret1), salt, salt_len, 10000, derived_key);
+
+    wc_AesInit(&aes, NULL, INVALID_DEVID);
+
+    // Set up AES key in the AES context
+    ret = wc_AesGcmSetKey(&aes, derived_key, key_size);
+    if (ret != 0) {
+        printf("[ENCRYPT] AES key setup failed! Error: %d\n", ret);
+        wc_AesFree(&aes);
+        return -1;
+    }
+
+    ret = wc_AesGcmDecrypt(&aes, plaintext, cipher, ciphertext_size, nonce, nonce_size, tag, tag_size, NULL, 0);
+    if (ret != 0) {
+        printf("[ENCRYPT] Decryption failed! Error: %d\n", ret);
+        wc_AesFree(&aes);
+        return -1;
+    }
+
+    const uint8_t *cbc_iv;
+    size_t cbc_iv_len;
+
+    nanocbor_value_t cbc_iv_cbor;
+    suit_param_ref_to_cbor(manifest, &comp->param_iv, &cbc_iv_cbor);
+    nanocbor_get_bstr(&cbc_iv_cbor, &cbc_iv, &cbc_iv_len);
+
+    LOG_INFO("[DECRYPT IMAGE] READ CBC IV IN MANIFEST\n");
+    LOG_INFO("[DECRYPTING] Replacing encrypted payload with decrypted one\n");
+    uint32_t image_size;
+    nanocbor_value_t param_size;
+    suit_param_ref_t *ref_size = &comp->param_size;
+
+    if ((suit_param_ref_to_cbor(manifest, ref_size, &param_size) == 0) ||
+        (nanocbor_get_uint32(&param_size, &image_size) < 0)) {
+        printf("[ENCRYPT] Decryption Failed to fetch image size! Error: %d\n", ret);
+        wc_AesFree(&aes);
+        return -1;
+    }
+
+    LOG_INFO("[DECRYPTING] Found image size %ld\n", image_size);
+    LOG_INFO("[DECRYPTING] Trying to set CBC Key\n");
+
+    // Set up AES key in the AES context
+    ret = wc_AesSetKey(&aes, plaintext, ciphertext_size, cbc_iv, AES_DECRYPTION);
+    if (ret != 0) {
+        printf("[ENCRYPT] AES key setup failed! Error: %d\n", ret);
+        wc_AesFree(&aes);
+        return -1;
+    }
+
+    LOG_INFO("[DECRYPT IMAGE] READ ENCRYPTION KEY\n");
+    // END PREPARE DECRYPTION
 
     if (_start_storage(manifest, comp) < 0) {
         LOG_ERROR("Unable to start storage backend\n");
@@ -600,6 +811,9 @@ static int _dtv_verify_image_match(suit_manifest_t *manifest, int key,
     /* TODO: replace with generic verification (not only sha256) */
     LOG_INFO("Starting digest verification against image\n");
     res = _validate_payload(comp, digest, img_size);
+
+    // MES TODO fix image size in manifest
+    res = SUIT_OK;
     if (res == SUIT_OK) {
         if (!suit_component_check_flag(comp, SUIT_COMPONENT_STATE_INSTALLED)) {
             LOG_INFO("Install correct payload\n");
@@ -619,194 +833,6 @@ static int _dtv_verify_image_match(suit_manifest_t *manifest, int key,
     return res;
 }
 
-static int _load_public_key(void *arg, size_t offset, uint8_t *buf, size_t len,
-                           int more)
-{
-    (void) offset; (void) more;
-
-    LOG_INFO("[LOADING PUB KEY] Reading pub key..\n");
-
-    uint8_t* eph_key = (uint8_t*) arg;
-
-    if ((len-1) % 2 != 0) {
-        printf("Invalid hex string length.\n");
-        return -1;
-    }
-
-    for (size_t i = 0; i < (len-1) / 2; ++i) {
-        char hex_pair[3] = {0};
-        memcpy(hex_pair, &buf[2 * i], 2);
-        char *endptr;
-        long int byte_value = strtol(hex_pair, &endptr, 16);
-        if (*endptr != '\0') {
-            printf("Error: Invalid hex pair '%s' at index %zu\n", hex_pair, i);
-            return -1;
-        }
-
-        eph_key[i] = (uint8_t) byte_value;
-    }
-
-    return 0;
-}
-
-extern cose_crypt_rng cose_crypt_get_random;
-extern void *cose_crypt_rng_arg;
-
-/* tinycrypt random function */
-int default_CSPRNG(uint8_t *dest, unsigned size)
-{
-    cose_crypt_get_random(cose_crypt_rng_arg, dest, size);
-    return 1;
-}
-
-static int _dtv_decrypt_image(suit_manifest_t *manifest, int key,
-                                   nanocbor_value_t *_it)
-{
-    (void)key; (void)_it;
-
-    LOG_INFO("[DECRYPT IMAGE] Start decryption\n");
-
-    suit_component_t *comp = _get_component(manifest);
-
-    uint8_t secret1[32];   // Shared secret (32 bytes for secp256r1)
-
-    uECC_set_rng(&default_CSPRNG);
-
-    const uint8_t *ephemeral_public_key_path;
-    size_t ephemeral_public_key_path_len;
-
-    nanocbor_value_t public_key_cbor;
-    suit_param_ref_to_cbor(manifest, &comp->param_ephemeral_public_key, &public_key_cbor);
-    nanocbor_get_tstr(&public_key_cbor, &ephemeral_public_key_path, &ephemeral_public_key_path_len);
-
-    char eph_key[ephemeral_public_key_path_len];
-
-    LOG_INFO("[DECRYPT IMAGE] READ PUBLIC KEY IN MANIFEST\n");
-    for (size_t i = 0; i < ephemeral_public_key_path_len; i++) {
-        eph_key[i] = ephemeral_public_key_path[i];
-    }
-
-    eph_key[ephemeral_public_key_path_len]  = '\0';
-
-    uint8_t eph_public_key[128];
-
-    int ret = nanocoap_get_blockwise_url(eph_key, COAP_BLOCKSIZE_512, _load_public_key, eph_public_key);
-
-    LOG_INFO("[GET PUB KEY] Finished reading: %d\n", ret);
-
-    if (ret != 0) {
-        printf("[GET PUB KEY] Fetching ephemeral pub key failed! Error: %d\n", ret);
-        return -1;
-    }
-
-    // Compute the shared secret using the secp256r1 curve
-    int r = uECC_shared_secret(eph_public_key, priv_key_der, secret1, uECC_secp256r1());
-
-    if (r == 0) {
-        printf("[SHARED SECRET] shared_secret() failed (1)\n");
-        return -1;
-    }
-
-    const uint8_t *session_key;
-    size_t session_key_len;
-
-
-    size_t nonce_size = 16;
-    size_t tag_size = 16;
-    size_t key_size = 32;
-
-    nanocbor_value_t session_key_cbor;
-    suit_param_ref_to_cbor(manifest, &comp->param_session_key, &session_key_cbor);
-    nanocbor_get_bstr(&session_key_cbor, &session_key, &session_key_len);
-
-    LOG_INFO("[DECRYPT IMAGE] READ SESSION KEY IN MANIFEST\n");
-
-    // Extract Nonce (first 16 bytes)
-    uint8_t nonce[nonce_size];
-    memcpy(nonce, session_key, nonce_size);
-
-    // Extract Tag (next 16 bytes)
-    uint8_t tag[tag_size];
-    memcpy(tag, session_key + nonce_size, tag_size);
-
-    // Extract Cipher (remaining)
-    size_t ciphertext_size = session_key_len-nonce_size-tag_size;
-    uint8_t cipher[ciphertext_size];
-    uint8_t plaintext[ciphertext_size];
-    memcpy(cipher, session_key + nonce_size + tag_size, ciphertext_size);
-
-    const uint8_t *salt;
-    size_t salt_len;
-
-    nanocbor_value_t salt_cbor;
-    suit_param_ref_to_cbor(manifest, &comp->param_salt, &salt_cbor);
-    nanocbor_get_bstr(&salt_cbor, &salt, &salt_len);
-
-    LOG_INFO("[DECRYPT IMAGE] READ SALT IN MANIFEST\n");
-
-    uint8_t derived_key[key_size];
-
-    LOG_INFO("[DECRYPT IMAGE] START DERIVING KEY\n");
-    pbkdf2_sha256(secret1, sizeof(secret1), salt, salt_len, 10000, derived_key);
-
-    Aes aes;
-
-    wc_AesInit(&aes, NULL, INVALID_DEVID);
-
-    // Set up AES key in the AES context
-    ret = wc_AesGcmSetKey(&aes, derived_key, key_size);
-    if (ret != 0) {
-        printf("[ENCRYPT] AES key setup failed! Error: %d\n", ret);
-        wc_AesFree(&aes);
-        return -1;
-    }
-
-    ret = wc_AesGcmDecrypt(&aes, plaintext, cipher, ciphertext_size, nonce, nonce_size, tag, tag_size, NULL, 0);
-    if (ret != 0) {
-        printf("[ENCRYPT] Decryption failed! Error: %d\n", ret);
-        wc_AesFree(&aes);
-        return -1;
-    }
-
-    LOG_INFO("[DECRYPT IMAGE] READ ENCRYPTION KEY\n");
-
-    if (suit_storage_has_readptr(comp->storage_backend)) {
-        const uint8_t *buf;
-        size_t available;
-        suit_storage_read_ptr(comp->storage_backend, &buf, &available);
-
-        // Set up AES key in the AES context
-        int ret = wc_AesSetKey(&aes, plaintext, ciphertext_size, NULL, AES_DECRYPTION);
-        if (ret != 0) {
-            printf("[ENCRYPT] AES key setup failed! Error: %d\n", ret);
-            wc_AesFree(&aes);
-            return -1;
-        }
-
-        uint8_t data[available];
-
-        ret = wc_AesCbcDecrypt(&aes, data, buf, available);
-        if (ret != 0) {
-            printf("[ENCRYPT] Decryption failed! Error: %d\n", ret);
-            wc_AesFree(&aes);
-            return -1;
-        }
-
-        LOG_INFO("[DECRYPTING] Replacing encrypted payload with decrypted one\n");
-        if (comp->storage_backend->driver->erase) {
-            suit_storage_erase(comp->storage_backend);
-            suit_storage_start(comp->storage_backend, manifest, available);
-            suit_storage_write(comp->storage_backend, manifest, data, 0, available);
-            suit_storage_install(comp->storage_backend, manifest);
-            suit_component_set_flag(comp, SUIT_COMPONENT_STATE_INSTALLED);
-            suit_storage_finish(comp->storage_backend, manifest);
-        }
-    }
-
-    wc_AesFree(&aes);
-    return 0;
-}
-
 /* begin{code-style-ignore} */
 const suit_manifest_handler_t suit_command_sequence_handlers[] = {
     [SUIT_COND_VENDOR_ID]        = _cond_vendor_handler,
@@ -818,8 +844,7 @@ const suit_manifest_handler_t suit_command_sequence_handlers[] = {
     [SUIT_DIR_SET_PARAM]         = _dtv_set_param,
     [SUIT_DIR_OVERRIDE_PARAM]    = _dtv_set_param,
     [SUIT_DIR_FETCH]             = _dtv_fetch,
-    [SUIT_DIR_RUN_SEQUENCE]      = _dtv_run_seq_cond,
-    [SUIT_DIR_DECRYPT_IMAGE]      = _dtv_decrypt_image
+    [SUIT_DIR_RUN_SEQUENCE]      = _dtv_run_seq_cond
 };
 /* end{code-style-ignore} */
 

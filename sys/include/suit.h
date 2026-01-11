@@ -177,7 +177,8 @@ typedef enum {
     SUIT_PARAMETER_URI_LIST          = 30,
     SUIT_PARAMETER_SESSION_KEY       = 99,
     SUIT_PARAMETER_SALT              = 100,
-    SUIT_PARAMETER_EPHEMERAL_PUBLIC_KEY = 101
+    SUIT_PARAMETER_EPHEMERAL_PUBLIC_KEY = 101,
+    SUIT_PARAMETER_IV = 102
 } suit_parameter_t;
 /** @} */
 
@@ -227,6 +228,7 @@ typedef struct {
     suit_param_ref_t param_session_key;
     suit_param_ref_t param_salt;
     suit_param_ref_t param_ephemeral_public_key;
+    suit_param_ref_t param_iv;
     /**
      * @brief Component offset inside the device memory.
      */
