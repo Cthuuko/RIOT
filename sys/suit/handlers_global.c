@@ -70,17 +70,12 @@ static int _seq_no_handler(suit_manifest_t *manifest, int key,
     LOG_INFO("Manifest seq_no: %"PRIu32", highest available: %"PRIu32"\n",
              seq_nr, stored_seq_no);
 
-    // TODO MES - this is done only for debugging purposes - fix after
-    seq_nr = 1;
-    stored_seq_no = 0;
     if (seq_nr <= stored_seq_no) {
         LOG_ERROR("seq_nr <= running image\n");
         return SUIT_ERR_SEQUENCE_NUMBER;
     }
 
     LOG_INFO("suit: validated sequence number\n");
-    // TODO MES - this is done only for debugging purposes - fix after
-    manifest->seq_number = 0;
     manifest->validated |= SUIT_VALIDATED_SEQ_NR;
     return SUIT_OK;
 
