@@ -46,10 +46,6 @@ QUIET ?= 1
 USEMODULE += suit suit_transport_coap
 USEMODULE += nanocoap_server_auto_init
 
-# enable VFS transport (only works on boards with external storage)
-USEMODULE += suit_transport_vfs
-USEMODULE += vfs_default
-
 # Display a progress bar during firmware download
 USEMODULE += progress_bar
 
@@ -70,7 +66,7 @@ ifneq (,$(filter native native32 native64,$(BOARD)))
 endif
 
 # Change this to 0 to not use ethos
-USE_ETHOS ?= 1
+USE_ETHOS ?= 0
 
 ifeq (1,$(USE_ETHOS))
   USEMODULE += stdio_ethos
