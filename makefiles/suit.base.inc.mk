@@ -74,6 +74,22 @@ endif
 # set FORCE so switching between keys using "SUIT_KEY=foo make ..."
 # triggers a rebuild even if the new key would otherwise not (because the other
 # key's mtime is too far back).
+
+# TODO Use this instead of $(SUIT_PUB_HDR)
+MES_SUIT_PUB_KEY := ../../BuildSystem/FWManager/certificates/Mgmnt_pub.pem
+
+MES_SUIT_PUB_HDR:
+	$(Q)mkdir -p $(SUIT_PUB_HDR_DIR)
+	echo openssl ec -inform pem -pubin -in ../../BuildSystem/FWManager/certificates/notexists.pem -outform der | tail -c 32 | xxd -i
+	$(Q)(							\
+		echo "const uint8_t public_key[][32] = {";	\
+		echo " {2";				\
+		echo openssl ec -inform pem -pubin -in $(MES_SUIT_PUB_KEY) -outform der | tail -c 32 | xxd -i; \
+		echo " },";				\
+		echo "};"					\
+	) | '$(LAZYSPONGE)' $(LAZYSPONGE_FLAGS) '$@'
+
+
 $(SUIT_PUB_HDR): $(SUIT_PUBS) FORCE | $(CLEAN)
 	$(Q)mkdir -p $(SUIT_PUB_HDR_DIR)
 	$(Q)(							\
