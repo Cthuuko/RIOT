@@ -12,14 +12,15 @@ SUIT_TOOL ?= $(RIOTBASE)/dist/tools/suit/suit-manifest-generator/bin/suit-tool
 # Multiple keys can be specified, that means that the firmware will accept
 # updates signed with either one of those keys.
 # If the firmware accepts multiple keys, let the first key be the signing key.
-SUIT_KEY ?= Mgmnt_priv
-SUIT_KEY_SIGN ?= $(word 1, $(SUIT_KEY))
 
 ifeq (1, $(RIOT_CI_BUILD))
   SUIT_KEY_DIR ?= $(BINDIR)
 else
-  SUIT_KEY_DIR ?= $(HOME)/FWManager/certificates
+  SUIT_KEY_DIR ?= $(HOME)/MES/BuildSystem/FWManager/certificates
 endif
+
+SUIT_KEY := $(basename $(notdir $(wildcard $(SUIT_KEY_DIR)/Mgmnt_priv*.pem)))
+SUIT_KEY_SIGN ?= $(word 1, $(SUIT_KEY))
 
 # we may accept multiple keys for the firmware
 SUIT_SEC ?= $(foreach item,$(SUIT_KEY),$(SUIT_KEY_DIR)/$(item).pem)
