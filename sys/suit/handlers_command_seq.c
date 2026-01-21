@@ -418,6 +418,8 @@ int default_CSPRNG(uint8_t *dest, unsigned size)
 
 // MES ADDITION END
 #if defined(MODULE_SUIT_TRANSPORT_COAP) || defined(MODULE_SUIT_TRANSPORT_VFS)
+uint32_t image_size_original = 0;
+
 static int _storage_helper(void *arg, size_t offset, uint8_t *buf, size_t len,
                            int more)
 {
@@ -475,6 +477,7 @@ static int _storage_helper(void *arg, size_t offset, uint8_t *buf, size_t len,
                 }
             }
             len -= pad;
+            image_size_original = image_size - pad;
         }
     }
 
@@ -781,8 +784,7 @@ static int _dtv_verify_image_match(suit_manifest_t *manifest, int key,
     size_t digest_len;
     suit_component_t *comp = _get_component(manifest);
 
-    uint32_t img_size;
-    if (_get_component_size(manifest, comp, &img_size) < 0) {
+    if (image_size_original == 0) {
         return SUIT_ERR_INVALID_MANIFEST;
     }
 
@@ -810,10 +812,8 @@ static int _dtv_verify_image_match(suit_manifest_t *manifest, int key,
 
     /* TODO: replace with generic verification (not only sha256) */
     LOG_INFO("Starting digest verification against image\n");
-    res = _validate_payload(comp, digest, img_size);
+    res = _validate_payload(comp, digest, image_size_original);
 
-    // MES TODO fix image size in manifest
-    res = SUIT_OK;
     if (res == SUIT_OK) {
         if (!suit_component_check_flag(comp, SUIT_COMPONENT_STATE_INSTALLED)) {
             LOG_INFO("Install correct payload\n");
