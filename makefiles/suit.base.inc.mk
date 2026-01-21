@@ -12,20 +12,20 @@ SUIT_TOOL ?= $(RIOTBASE)/dist/tools/suit/suit-manifest-generator/bin/suit-tool
 # Multiple keys can be specified, that means that the firmware will accept
 # updates signed with either one of those keys.
 # If the firmware accepts multiple keys, let the first key be the signing key.
-SUIT_KEY ?= default
+SUIT_KEY ?= Mgmnt_priv
 SUIT_KEY_SIGN ?= $(word 1, $(SUIT_KEY))
-XDG_DATA_HOME ?= $(HOME)/.local/share
 
 ifeq (1, $(RIOT_CI_BUILD))
   SUIT_KEY_DIR ?= $(BINDIR)
 else
-  SUIT_KEY_DIR ?= $(XDG_DATA_HOME)/RIOT/keys
+  SUIT_KEY_DIR ?= $(HOME)/FWManager/certificates
 endif
 
 # we may accept multiple keys for the firmware
 SUIT_SEC ?= $(foreach item,$(SUIT_KEY),$(SUIT_KEY_DIR)/$(item).pem)
 # but there can only be one signing key
-SUIT_SEC_SIGN ?= $(SUIT_KEY_DIR)/$(SUIT_KEY_SIGN).pem
+MES_CERTIFICATES_DIR 		:= $(HOME)/FWManager/certificates
+SUIT_SEC_SIGN ?= $(MES_CERTIFICATES_DIR)/Mgmnt_pub.pem
 
 # generate a list of the public keys
 SUIT_PUBS ?= $(SUIT_SEC:.pem=.pem.pub)
@@ -74,21 +74,6 @@ endif
 # set FORCE so switching between keys using "SUIT_KEY=foo make ..."
 # triggers a rebuild even if the new key would otherwise not (because the other
 # key's mtime is too far back).
-
-# TODO Use this instead of $(SUIT_PUB_HDR)
-MES_SUIT_PUB_KEY := ../../BuildSystem/FWManager/certificates/Mgmnt_pub.pem
-
-MES_SUIT_PUB_HDR:
-	$(Q)mkdir -p $(SUIT_PUB_HDR_DIR)
-	echo openssl ec -inform pem -pubin -in ../../BuildSystem/FWManager/certificates/notexists.pem -outform der | tail -c 32 | xxd -i
-	$(Q)(							\
-		echo "const uint8_t public_key[][32] = {";	\
-		echo " {2";				\
-		echo openssl ec -inform pem -pubin -in $(MES_SUIT_PUB_KEY) -outform der | tail -c 32 | xxd -i; \
-		echo " },";				\
-		echo "};"					\
-	) | '$(LAZYSPONGE)' $(LAZYSPONGE_FLAGS) '$@'
-
 
 $(SUIT_PUB_HDR): $(SUIT_PUBS) FORCE | $(CLEAN)
 	$(Q)mkdir -p $(SUIT_PUB_HDR_DIR)
