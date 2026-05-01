@@ -14,6 +14,15 @@ sudo apt install make gcc-multilib python3-serial python3-psutil wget unzip git 
 
 ## Flashing the nRF52840 Dongle
 
+More information can be found under /boards/nrf52840dongle/doc.md
+
+### Prerequisite
+[nrfutil](https://www.nordicsemi.com/Products/Development-tools/nRF-Util) needs to be installed. Refer to this [guide](https://docs.nordicsemi.com/bundle/nrfutil/page/guides/installing.html)
+
+![](2026-05-01-05-47-11.png)
+
+`nrfutil install nrf5sdk-tools` needs to be executed
+
 ### Attaching the device to WSL
 
 ![](2026-05-01-05-09-36.png)
@@ -24,6 +33,19 @@ Bind the device as Administrator
 Attach the device to WSL
 ![](2026-05-01-05-11-35.png)
 You should hear a Windows plug-in sound
+
+ATTENTION:
+To flash the dongle, you have to press the RESET button on the dongle.
+Refer [here](https://docs.nordicsemi.com/bundle/ug_nrf52840_dongle/page/UG/nrf52840_Dongle/programming.html)
+![](2026-05-01-06-31-28.png)
+
+This is the VID:PID once it's in DFU Bootloader Mode
+![](2026-05-01-06-18-48.png)
+
+This is the VID:PID once it's flashed 
+![](2026-05-01-06-20-22.png)
+
+Each time you have to reattach the device in Powershell, if WSL is in use.
 
 ### Flash hello-world
 ```
@@ -50,3 +72,4 @@ This command retains the line endings from the repository
 ```
 git config --global core.autocrlf input
 ```
+
