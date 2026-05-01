@@ -70,8 +70,10 @@ export CC                    # The C compiler to use.
 export CXX                   # The CXX compiler to use.
 export CCAS                  # The C compiler to use for assembler files, typically the same as CC.
 export CFLAGS                # The compiler flags. Must only ever be used with `+=`.
+unexport RCFLAGS             # recursively (late) evaluated compiler flags for target specific addition
 export CFLAGS_CPU            # CPU architecture specific compiler flags
 export CFLAGS_STATIC_ANALYSIS# Additional CFLAGS to use when static analysis should be enabled
+export RCFLAGS_WRITE_SARIF	 # recursively evaluated CFLAG to write diagnostic messages to sarif
 export CXXUWFLAGS            # (Patterns of) flags in CFLAGS that should not be passed to CXX.
 export CXXEXFLAGS            # Additional flags that should be passed to CXX.
 export CCASUWFLAGS           # (Patterns of) flags in CFLAGS that should not be passed to CCAS.
@@ -95,8 +97,6 @@ export WERROR                # Treat all compiler warnings as errors if set to 1
 export WPEDANTIC             # Issue all (extensive) compiler warnings demanded by strict C/C++
 # EEPROM_FILE                # (Native only!) file path where the content of the EEPROM is stored
 
-# GITCACHE                   # path to git-cache executable
-# GIT_CACHE_DIR              # path to git-cache cache directory, only used with packages
 # FLASHER                    # The command to call on "make flash".
 # PROG_DEV                   # The device to connect the FLASHER and DEBUGGER
 # FFLAGS                     # The parameters to supply to FLASHER.

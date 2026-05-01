@@ -15,6 +15,7 @@
  * @}
  */
 #include <errno.h>
+#include <string.h>
 
 #include "auto_init.h"
 #include "auto_init_utils.h"
@@ -24,6 +25,9 @@
 #include "rtc_utils.h"
 #include "walltime.h"
 #include "ztimer.h"
+
+#define ENABLE_DEBUG 0
+#include "debug.h"
 
 #ifndef AUTO_INIT_PRIO_MOD_WALLTIME
 #define AUTO_INIT_PRIO_MOD_WALLTIME    AUTO_INIT_PRIO_WDT_EVENT
@@ -85,9 +89,11 @@ int walltime_set(struct tm *time)
     int32_t diff = now - old;
 
     if (now > old && diff <= 0) {
+        DEBUG("walltime_set: overflow\n");
         return -ERANGE;
     }
     if (now < old && diff >= 0) {
+        DEBUG("walltime_set: underflow\n");
         return -ERANGE;
     }
 
@@ -118,6 +124,17 @@ int walltime_get(struct tm *time, uint16_t *ms)
     return res;
 }
 
+int walltime_set_alarm(struct tm *time, walltime_alarm_cb_t cb, void *arg)
+{
+    rtc_tm_normalize(time);
+    return walltime_impl_alarm_set(time, cb, arg);
+}
+
+int walltime_get_alarm(struct tm *time)
+{
+    return walltime_impl_alarm_get(time);
+}
+
 uint32_t walltime_uptime(bool full)
 {
     uint32_t now = walltime_get_riot(NULL);
@@ -135,7 +152,18 @@ static void auto_init_uptime(void)
 {
     walltime_impl_init();
 
-    _boottime = walltime_get_riot(NULL);
+    /* don't allow time < RIOT_EPOCH */
+    struct tm now;
+    walltime_get(&now, NULL);
+    if (now.tm_year < RIOT_EPOCH - 1900) {
+        memset(&now, 0, sizeof(now));
+        now.tm_mday = 1;
+        now.tm_year = RIOT_EPOCH - 1900;
+        walltime_impl_set(&now);
+    }
+
+    _boottime = rtc_mktime(&now);
+
 #ifdef BACKUP_RAM
     if (!cpu_woke_from_backup()) {
         _boottime_bkup = _boottime;

@@ -1,3 +1,10 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Tom Hert <git@annsann.eu>
+ * SPDX-FileCopyrightText: 2026 Lasse Rosenow <Lasse.Rosenow@haw-hamburg.de>
+ * SPDX-FileCopyrightText: 2026 HAW Hamburg
+ * SPDX-License-Identifier: LGPL-2.1-only
+ */
+
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import rehypeGithubEmoji from "rehype-github-emoji";
@@ -15,6 +22,7 @@ export default defineConfig({
       markdown: {
         processedDirs: ["../guides"],
       },
+      routeMiddleware: "./src/routeData.ts",
       head: [
         {
           tag: "link",
@@ -90,7 +98,12 @@ export default defineConfig({
             "general/structure",
             "general/vision",
             "general/governance",
+            "general/security",
           ],
+        },
+        {
+          label: "Supported Boards",
+          link: "boards",
         },
         {
           label: "Tutorials",
@@ -137,6 +150,7 @@ export default defineConfig({
               items: [
                 "advanced_tutorials/creating_application",
                 "advanced_tutorials/creating_modules",
+                "advanced_tutorials/unittests",
                 "advanced_tutorials/device_drivers",
                 "advanced_tutorials/porting_boards",
                 "advanced_tutorials/event_queue",
@@ -154,6 +168,7 @@ export default defineConfig({
             "build-system/build-in-docker",
             "build-system/advanced_build_system_tricks",
             "build-system/debugging_aids",
+            "build-system/static_analysis",
           ],
         },
         {
@@ -198,7 +213,12 @@ export default defineConfig({
   vite: {
     server: {
       fs: {
-        allow: ["./", "../doxygen", "../../release-notes.txt"],
+        allow: [
+          "./",
+          "../doxygen",
+          "../../release-notes.txt",
+          "../../boards",
+        ],
       },
     },
   },

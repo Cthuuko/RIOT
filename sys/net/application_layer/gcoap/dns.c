@@ -26,7 +26,6 @@
 #include "net/sock/dns.h"
 #include "net/sock/udp.h"
 #include "random.h"
-#include "string_utils.h"
 #include "uri_parser.h"
 
 #include "net/gcoap/dns.h"
@@ -312,9 +311,13 @@ ssize_t gcoap_dns_server_proxy_get(char *proxy, size_t proxy_len)
     ssize_t res = 0;
     mutex_lock(&_client_mutex);
     if (_dns_server_uri_isset()) {
-        res = strscpy(proxy, _proxy, proxy_len);
-        if (res == -E2BIG) {
+        res = (ssize_t)strlen(_proxy);
+        if ((size_t)res >= proxy_len) {
             res = -ENOBUFS;
+        }
+        else {
+            strncpy(proxy, _proxy, proxy_len - 1);
+            proxy[res] = '\0';
         }
     }
     mutex_unlock(&_client_mutex);
@@ -534,17 +537,23 @@ static int _do_block(coap_pkt_t *pdu, const sock_udp_ep_t *remote,
     }
     len = coap_opt_finish(pdu, COAP_OPT_FINISH_PAYLOAD);
 
-    len += coap_blockwise_put_bytes(&slicer, pdu->payload,
-                                    context->dns_buf,
-                                    context->dns_buf_len);
+    int res = coap_blockwise_put_bytes_pkt(pdu, &slicer,
+                                           context->dns_buf,
+                                           context->dns_buf_len);
+
+    if (res) {
+        return res;
+    }
 
     coap_block1_finish(&slicer);
 
-    if ((len = _send(pdu->buf, len, remote, slicer.start == 0, context, tl_type)) <= 0) {
+    len = _send(pdu->buf, len, remote, slicer.start == 0, context, tl_type);
+
+    if (len <= 0) {
         DEBUG("gcoap_dns: msg send failed: %" PRIdSIZE "\n", len);
-        return len;
     }
-    return len;
+
+    return (int)len;
 }
 
 static ssize_t _req(_req_ctx_t *context)

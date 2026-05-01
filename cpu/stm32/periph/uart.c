@@ -50,6 +50,13 @@
 #define ISR_TC      USART_ISR_TC
 #define TDR_REG     TDR
 #define RDR_REG     RDR
+#elif defined(CPU_FAM_STM32H7)
+#  define ISR_REG     ISR
+#  define ISR_TXE     USART_ISR_TXE_TXFNF
+#  define ISR_RXNE    USART_ISR_RXNE_RXFNE
+#  define ISR_TC      USART_ISR_TC
+#  define TDR_REG     TDR
+#  define RDR_REG     RDR
 #else
 #define ISR_REG     SR
 #define ISR_TXE     USART_SR_TXE
@@ -417,7 +424,6 @@ void uart_write(uart_t uart, const uint8_t *data, size_t len)
             dev(uart)->CR3 |= USART_CR3_DMAT;
             dma_transfer(uart_config[uart].dma, uart_config[uart].dma_chan, data,
                          (void *)&dev(uart)->TDR_REG, len, DMA_MEM_TO_PERIPH, DMA_INC_SRC_ADDR);
-
             /* make sure the function is synchronous by waiting for the transfer to
              * finish */
             wait_for_tx_complete(uart);

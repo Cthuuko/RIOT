@@ -12,6 +12,7 @@ ifeq ($(OS),Darwin)
   DEBUGGER ?= lldb
 else
   DEBUGGER ?= gdb
+  DEBUGSERVER ?= gdbserver
 endif
 
 
@@ -102,6 +103,9 @@ ifeq ($(shell basename $(DEBUGGER)),lldb)
   DEBUGGER_FLAGS = -- $(ELFFILE) $(TERMFLAGS)
 else
   DEBUGGER_FLAGS = -q --args $(ELFFILE) $(TERMFLAGS)
+  DEBUGSERVER_BIND_ADDR ?= 127.0.0.1
+  DEBUGSERVER_PORT ?= 3333
+  DEBUGSERVER_FLAGS = --no-startup-with-shell --disable-randomization $(DEBUGSERVER_BIND_ADDR):$(DEBUGSERVER_PORT) $(ELFFILE) $(TERMFLAGS)
 endif
 term-valgrind: export VALGRIND_FLAGS ?= \
 	--leak-check=full \
@@ -113,7 +117,7 @@ debug-valgrind-server: export VALGRIND_FLAGS ?= --vgdb=yes --vgdb-error=0 -v \
 	--read-var-info=yes
 term-cachegrind: export CACHEGRIND_FLAGS += --tool=cachegrind
 term-gprof: TERMPROG = GMON_OUT_PREFIX=gmon.out $(ELFFILE)
-all-valgrind: CFLAGS += -DHAVE_VALGRIND_H
+all-valgrind: CFLAGS += -DHAVE_VALGRIND
 all-valgrind: NATIVEINCLUDES += $(shell pkg-config valgrind --cflags)
 all-gprof: CFLAGS += -pg
 all-gprof: LINKFLAGS += -pg

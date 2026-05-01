@@ -1,12 +1,29 @@
-import { defineCollection, z } from "astro:content";
+/*
+ * SPDX-FileCopyrightText: 2026 Lasse Rosenow <Lasse.Rosenow@haw-hamburg.de>
+ * SPDX-FileCopyrightText: 2026 Tom Hert <git@annsann.eu>
+ * SPDX-FileCopyrightText: 2026 HAW Hamburg
+ * SPDX-License-Identifier: LGPL-2.1-only
+ */
+
+import { defineCollection } from "astro:content";
 import { type Loader } from "astro/loaders";
 import { docsSchema } from "@astrojs/starlight/schema";
 import { promises as fs } from "node:fs";
 import { glob } from "astro/loaders";
+import { z } from "astro/zod";
+import path from "node:path";
+import {
+  extractBoardTitleFromDoxygen,
+  transformDoxygenMarkdown,
+} from "./lib/doxygen_filter";
 
 export const collections = {
   docs: defineCollection({
     loader: glob({ pattern: "**/*.(md|mdx)", base: "../guides" }),
+    schema: docsSchema(),
+  }),
+  boards: defineCollection({
+    loader: boardsLoader(),
     schema: docsSchema(),
   }),
   changelog: defineCollection({
@@ -21,6 +38,72 @@ export const collections = {
     }),
   }),
 };
+
+/**
+ * Load board documentation from doc.md files in the boards directory.
+ * Each board directory should contain a doc.md file with markdown content.
+ * Extracts board titles from @defgroup directives like riot-index does.
+ */
+export function boardsLoader(): Loader {
+  return {
+    name: "boards-loader",
+    load: async (context): Promise<void> => {
+      const boardsDir = "../../boards";
+
+      try {
+        // Read all directories in the boards folder
+        const entries = await fs.readdir(boardsDir, { withFileTypes: true });
+        const boardDirs = entries.filter((entry) => entry.isDirectory());
+
+        for (const boardDir of boardDirs) {
+          const boardName = boardDir.name;
+          const docPath = path.join(boardsDir, boardName, "doc.md");
+
+          // Check if doc.md exists for this board
+          try {
+            const docContent = await fs.readFile(docPath, "utf-8");
+
+            // Parse frontmatter out of the markdown content if it exists
+            let markdown = docContent;
+            const fallbackTitle = boardName.replace(/-/g, " ");
+            const title = extractBoardTitleFromDoxygen(
+              docContent,
+              fallbackTitle,
+            );
+            const filteredMarkdown = transformDoxygenMarkdown(markdown);
+
+            // Parse @brief directives for description (take the first one as description)
+            const descriptionMatch = docContent.match(/@brief\s+(.+)/);
+            const description = descriptionMatch
+              ? descriptionMatch[1].trim()
+              : "";
+
+            // Create entry ID
+            const entryId = `boards/${boardName}`;
+
+            // Add entry to content collection
+            context.store.set({
+              id: entryId,
+              data: {
+                title: title,
+                description: description,
+              },
+              body: filteredMarkdown,
+              rendered: await context.renderMarkdown(filteredMarkdown),
+            });
+          } catch (error) {
+            console.debug(
+              `Tried to load documentation for board "${boardName}" but it doesn't contain a doc.md file, skipping...`,
+            );
+            continue;
+          }
+        }
+      } catch (error) {
+        console.error("Error loading boards:", error);
+      }
+    },
+  };
+}
 
 /**
  * Generate a content collection containing the release notes of each release as an entry.

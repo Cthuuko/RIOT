@@ -90,7 +90,7 @@ void _native_syscall_leave(void)
 /* make use of TLSF if it is included, except when building with valgrind
  * support, where one probably wants to make use of valgrind's memory leak
  * detection abilities*/
-#if (!(defined MODULE_TLSF) && !(defined NATIVE_MEMORY)) || (defined(HAVE_VALGRIND_H))
+#if (!(defined MODULE_TLSF) && !(defined NATIVE_MEMORY)) || (defined(HAVE_VALGRIND))
 int _native_in_malloc = 0;
 void *malloc(size_t size)
 {
@@ -157,7 +157,7 @@ void *realloc(void *ptr, size_t size)
     _native_syscall_leave();
     return r;
 }
-#endif /* !(defined MODULE_TLSF) || (defined(HAVE_VALGRIND_H)) */
+#endif /* !(defined MODULE_TLSF) || (defined(HAVE_VALGRIND)) */
 
 ssize_t _native_read(int fd, void *buf, size_t count)
 {
@@ -250,7 +250,12 @@ int fputs(const char *s, FILE *fp)
 
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp)
 {
-    return _native_write(fileno(fp), ptr, size * nmemb);
+    ssize_t r = _native_write(fileno(fp), ptr, size * nmemb);
+
+    if (r < 0 || size == 0) {
+        return 0;
+    }
+    return (size_t)r / size;
 }
 #endif
 
@@ -447,8 +452,7 @@ void errx(int eval, const char *fmt, ...)
 
 int getpid(void)
 {
-    warnx("getpid(): not implemented");
-    return -1;
+    return real_getpid();
 }
 
 #if (IS_USED(MODULE_LIBC_GETTIMEOFDAY))

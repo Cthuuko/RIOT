@@ -5,7 +5,7 @@
 # When the docker image is updated, checks at
 # dist/tools/buildsystem_sanity_check/check.sh start complaining in CI, and
 # provide the latest values to verify and fill in.
-DOCKER_TESTED_IMAGE_REPO_DIGEST := 08fa7da2c702ac4db7cf57c23fc46c1971f3bffc4a6eff129793f853ec808736
+DOCKER_TESTED_IMAGE_REPO_DIGEST := 028d9267e715e992d9b47bb8738685c6cc96b1a3bc3924489e7e543a333e8486
 
 DOCKER_PULL_IDENTIFIER := docker.io/riot/riotbuild@sha256:$(DOCKER_TESTED_IMAGE_REPO_DIGEST)
 export DOCKER_IMAGE ?= $(DOCKER_PULL_IDENTIFIER)
@@ -155,10 +155,10 @@ DOCKER_RUN_FLAGS += --platform linux/amd64
 # allow setting make args from command line like '-j'
 DOCKER_MAKE_ARGS ?=
 
-# Resolve symlink of /etc/localtime to its real path
-# This is a workaround for docker on macOS, for more information see:
-# https://github.com/docker/for-mac/issues/2396
-ETC_LOCALTIME = $(realpath /etc/localtime)
+# Extract timezone name from /etc/localtime, for passing to the container. This
+# avoids mounting /etc/localtime which fails for some container runtimes under
+# macOS.
+HOST_TIMEZONE = $(shell readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')
 
 # Fetch the number of jobs from the MAKEFLAGS
 # With $MAKE_VERSION < 4.2, the amount of parallelism is not available in
@@ -290,13 +290,13 @@ DOCKER_APPDIR = $(DOCKER_RIOTPROJECT)/$(BUILDRELPATH)
 
 
 # Directory mapping in docker and directories environment variable configuration
-DOCKER_VOLUMES_AND_ENV += $(call docker_volume,$(ETC_LOCALTIME),/etc/localtime,ro)
 DOCKER_VOLUMES_AND_ENV += $(call docker_volume,$(RIOTBASE),$(DOCKER_RIOTBASE))
 # Selective components of Cargo to ensure crates are not re-downloaded (and
 # subsequently rebuilt) on every run. Not using all of ~/.cargo as ~/.cargo/bin
 # would be run by Cargo and that'd be very weird.
 DOCKER_VOLUMES_AND_ENV += $(call docker_volume,$(HOME)/.cargo/registry,$(DOCKER_BUILD_ROOT)/.cargo/registry)
 DOCKER_VOLUMES_AND_ENV += $(call docker_volume,$(HOME)/.cargo/git,$(DOCKER_BUILD_ROOT)/.cargo/git)
+DOCKER_VOLUMES_AND_ENV += -e 'TZ=$(HOST_TIMEZONE)'
 DOCKER_VOLUMES_AND_ENV += -e 'RIOTBASE=$(DOCKER_RIOTBASE)'
 DOCKER_VOLUMES_AND_ENV += -e 'CCACHE_BASEDIR=$(DOCKER_RIOTBASE)'
 
@@ -312,6 +312,7 @@ DOCKER_VOLUMES_AND_ENV += $(call docker_volume_and_env,RIOTBOARD,,riotboard)
 DOCKER_VOLUMES_AND_ENV += $(call docker_volume_and_env,RIOTMAKE,,riotmake)
 
 # Add GIT_CACHE_DIR if the directory exists
+GIT_CACHE_DIR ?= $(HOME)/.gitcache
 DOCKER_VOLUMES_AND_ENV += $(if $(wildcard $(GIT_CACHE_DIR)),$(call docker_volume,$(GIT_CACHE_DIR),$(DOCKER_BUILD_ROOT)/gitcache))
 DOCKER_VOLUMES_AND_ENV += $(if $(wildcard $(GIT_CACHE_DIR)),-e 'GIT_CACHE_DIR=$(DOCKER_BUILD_ROOT)/gitcache')
 
