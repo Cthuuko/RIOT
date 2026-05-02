@@ -50,7 +50,7 @@ calcsha512() {
 
 downloader() {
     if [ -n "$(command -v wget)" ]; then
-        wget -nv "$1" -O "$2"
+        wget -nv "$1" -O "$2" --no-check-certificate
     elif [ -n "$(command -v curl)" ]; then
         curl -L "$1" -o "$2"
     else
