@@ -54,6 +54,30 @@ make
 
 ```
 
+# SUIT
+
+## Run as native
+### Prepare manifest
+Execute this under `examples/advanced/suit_update`:
+```
+BOARD=native make gen-manifest
+```
+
+### Set up image server
+In a separate terminal execute under `~/RIOT`:
+```
+sudo dist/tools/tapsetup/tapsetup -c
+sudo ip address add 2001:db8::1/64 dev tapbr0
+aiocoap-fileserver coaproot
+```
+### SUIT update via native terminal
+Execute this under `examples/advanced/suit_update`:
+```
+BOARD=native make all term
+ifconfig 6 add 2001:db8::2/64
+suit fetch coap://[2001:db8::1]/suit_manifest.signed
+```
+
 # FAQ
 
 
