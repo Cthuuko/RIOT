@@ -1,0 +1,25 @@
+# My custom makefile to generate a SUIT manifest
+RIOTBASE ?= $(CURDIR)/..
+SUIT_TOOLS_BASE_DIR = $(RIOTBASE)/dist/tools/suit
+SUIT_TOOLS_GEN_DIR = $(SUIT_TOOLS_BASE_DIR)/suit-manifest-generator/bin/suit-tool
+
+IMAGE_SERVER_PATH = $(RIOTBASE)/coaproot
+
+SUIT_MANIFEST_SKELETON_FILE = suit.tmp
+
+# Manifest format can be 'suit' or 'json'
+SUIT_MANIFEST_FORMAT ?= suit
+
+SUIT_MANIFEST_UNSIGNED_FILE_PATH ?= $(IMAGE_SERVER_PATH)/suit_manifest
+SUIT_MANIFEST_SIGNED_FILE_PATH ?= $(IMAGE_SERVER_PATH)/suit_manifest.signed
+
+# Default addressing if following README.native.md
+ifneq (,$(filter native native32 native64,$(BOARD)))
+  SUIT_MANIFEST_SLOTFILES = ${IMAGE_SERVER_PATH}/payload.bin:0:ram:0
+endif
+
+gen-manifest:
+	@$(SUIT_TOOLS_BASE_DIR)/gen_manifest.py --urlroot coap://$(SUIT_COAP_SERVER)/ --seqnr ${APP_VER} -o $(SUIT_MANIFEST_SKELETON_FILE) ${SUIT_MANIFEST_SLOTFILES}
+	@$(SUIT_TOOLS_GEN_DIR) create -f ${SUIT_MANIFEST_FORMAT} -i $(SUIT_MANIFEST_SKELETON_FILE) -o $(SUIT_MANIFEST_UNSIGNED_FILE_PATH)
+	@$(SUIT_TOOLS_GEN_DIR) sign -k ${SUIT_KEY_DIR}/default.pem -m $(SUIT_MANIFEST_UNSIGNED_FILE_PATH) -o $(SUIT_MANIFEST_SIGNED_FILE_PATH)
+	@echo "Generated manifest in ${SUIT_MANIFEST_SIGNED_FILE_PATH}"
