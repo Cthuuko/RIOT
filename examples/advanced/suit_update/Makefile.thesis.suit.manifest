@@ -19,7 +19,7 @@ ifneq (,$(filter native native32 native64,$(BOARD)))
 endif
 
 gen-manifest:
-	@$(SUIT_TOOLS_BASE_DIR)/gen_manifest.py --urlroot coap://$(SUIT_COAP_SERVER)/ --seqnr ${APP_VER} -o $(SUIT_MANIFEST_SKELETON_FILE) ${SUIT_MANIFEST_SLOTFILES}
+	@$(SUIT_TOOLS_BASE_DIR)/gen_manifest.py --urlroot coap://$(SUIT_COAP_SERVER)/ --seqnr ${APP_VER} --uuid-class ${BOARD} -o $(SUIT_MANIFEST_SKELETON_FILE) ${SUIT_MANIFEST_SLOTFILES}
 	@$(SUIT_TOOLS_GEN_DIR) create -f ${SUIT_MANIFEST_FORMAT} -i $(SUIT_MANIFEST_SKELETON_FILE) -o $(SUIT_MANIFEST_UNSIGNED_FILE_PATH)
 	@$(SUIT_TOOLS_GEN_DIR) sign -k ${SUIT_KEY_DIR}/default.pem -m $(SUIT_MANIFEST_UNSIGNED_FILE_PATH) -o $(SUIT_MANIFEST_SIGNED_FILE_PATH)
 	@echo "Generated manifest in ${SUIT_MANIFEST_SIGNED_FILE_PATH}"
