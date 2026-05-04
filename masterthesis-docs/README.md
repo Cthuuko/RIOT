@@ -78,6 +78,45 @@ ifconfig 6 add 2001:db8::2/64
 suit fetch coap://[2001:db8::1]/suit_manifest.signed
 ```
 
+
+
+# Using PQC in Python Cryptography
+The dependency `cryptography` needs to be installed at the minimum version `47.0.0` to use PQC algorithms such as ML-DSA and ML-KEM.
+
+## WARNING
+The latest version `47.0.0` does not use OpenSSL (yet) for PQC instead AWS-LC or BoringSSL is used. This is a conscious decision made by the developers of the python dependency `cryptography` (For more information see here: [The State of OpenSSL for pyca/cryptography](https://cryptography.io/en/latest/statements/state-of-openssl/)).
+
+ Since OpenSSL bases its implementation on BoringSSL (See [here](https://github.com/openssl/openssl/blob/master/doc/designs/ml-dsa.md)), 
+ BoringSSL will be installed (See [here](https://cryptography.io/en/47.0.0/installation/#building-with-boringssl-libressl-or-aws-lc) for more information):
+
+```shell
+git clone https://boringssl.googlesource.com/boringssl
+cd boringssl
+
+# Set to the commit which was used during cryptography's 47.0.0 tests
+# See here https://github.com/pyca/cryptography/commit/6cb20b3141c6391ae11075f30b992375c05adad5
+git reset --hard 439e53783a5f3829769f84bdd70a46f218fa10ed
+
+cmake -GNinja -B build -DBUILD_SHARED_LIBS=1
+ninja -C build -j2
+
+#After this, you get:
+#~/boringssl/build/libcrypto.a
+#~/boringssl/build/libssl.a
+
+export OPENSSL_LIB_DIR=~/boringssl/build/
+export OPENSSL_DIR=~/boringssl/
+
+pip install --no-binary cryptography cryptography
+```
+
+Test if it works:
+```shell
+# This must be executed before using python scripts. This export enables using BoringSSL instead of the system's OpenSSL
+export LD_LIBRARY_PATH=~/boringssl/build
+python3 ~/RIOT/examples/advanced/test-ml-dsa.py
+```
+
 # FAQ
 
 
@@ -97,3 +136,33 @@ This command retains the line endings from the repository
 git config --global core.autocrlf input
 ```
 
+## Error during cryptography installation
+
+### Invalid Rust Target
+When you see an error regarding invalid Rust Target, then switch to the correct Rust version or change the target value inside the file.
+
+![](2026-05-03-23-34-44.png)
+
+```
+error: invalid value '1.70' for '--rust-target <RUST_TARGET>': Got an invalid Rust target. Accepted values are of the form "1.71" or "nightly".
+```
+
+```
+nano ~/.cargo/registry/src/index.crates.io-6f17d22bba15001f/openssl-sys-0.9.114/build/run_bindgen.rs
+```
+![](2026-05-03-23-39-30.png)
+
+
+### stddef.h not found
+![](2026-05-03-23-40-20.png)
+
+Install these dependencies:
+```
+sudo apt install build-essential clang
+```
+
+### Any build errors regarding `maturin` and `cffi`
+```
+pip install maturin # Install maturing
+pip install --upgrade cffi # Update cffi to version 2
+```
