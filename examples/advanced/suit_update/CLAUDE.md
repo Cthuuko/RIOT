@@ -101,13 +101,24 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
     `--uuid-class native64` or the device will reject the manifest with
     `suit_worker: suit_parse() failed. res=-4` (class ID mismatch — check
     the printed "Comparing X to Y from manifest" line to confirm).
-- If `SUIT_KEY_DIR`'s `default.pem` has been regenerated as a non-ed25519
-  key (e.g. ML-DSA from post-quantum experiments elsewhere in this repo),
-  `suit-tool sign` fails with `Non-library key type not implemented`.
-  Generate a dedicated ed25519 key instead of overwriting the default:
-  `dist/tools/suit/gen_key.py keys/native_ed25519.pem`, then build with
-  `SUIT_KEY_DIR=<dir> SUIT_KEY=native_ed25519 make ...` and sign with
-  `-k keys/native_ed25519.pem` so the embedded pubkey matches the signing key.
+- If `SUIT_KEY_DIR`'s `default.pem` has been regenerated as a non-ed25519,
+  non-ML-DSA key, `suit-tool sign` fails with
+  `Non-library key type not implemented`. Generate a dedicated ed25519 key
+  instead of overwriting the default: `dist/tools/suit/gen_key.py
+  keys/native_ed25519.pem`, then build with `SUIT_KEY_DIR=<dir>
+  SUIT_KEY=native_ed25519 make ...` and sign with `-k keys/native_ed25519.pem`
+  so the embedded pubkey matches the signing key.
+- **ML-DSA (post-quantum) manifest signing is supported**, tooling-only:
+  `SUIT_KEY_ALGO=ml-dsa-65 make suit/genkey` (or `suit-tool keygen -t
+  ml-dsa-65`) generates an ML-DSA-65 key, `%.pem.pub`/`public_key.h`
+  generation and `suit-tool sign` both handle it like Ed25519 (see
+  `dist/tools/suit/ml-dsa-example/README.md` for the crypto background).
+  Requires OpenSSL 3.5+ and a `cryptography` build with ML-DSA support.
+  **On-device verification is not implemented** — `pkg/libcose` (used by
+  `sys/suit/handlers_envelope.c`) has no PQC algorithm support, so firmware
+  built with an ML-DSA key will still reject the manifest at the
+  `_auth_handler`/`cose_sign_verify` step. This is a known, deliberate gap,
+  not a bug.
 - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
 - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —

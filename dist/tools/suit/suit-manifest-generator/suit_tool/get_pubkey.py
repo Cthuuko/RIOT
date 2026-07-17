@@ -20,7 +20,7 @@ import textwrap
 import binascii
 
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, mldsa
 from cryptography.hazmat.primitives.asymmetric import utils as asymmetric_utils
 from cryptography.hazmat.primitives import serialization as ks
 
@@ -46,7 +46,8 @@ def to_uecc_pubkey(pk):
 def to_header(pk):
     if isinstance(pk, ec.EllipticCurvePrivateKey):
         return to_uecc_pubkey(pk)
-    if isinstance(pk, ed25519.Ed25519PrivateKey):
+    if isinstance(pk, (ed25519.Ed25519PrivateKey, mldsa.MLDSA44PrivateKey,
+                       mldsa.MLDSA65PrivateKey, mldsa.MLDSA87PrivateKey)):
         public_bytes = pk.public_key().public_bytes(ks.Encoding.Raw,
                                                       ks.PublicFormat.Raw)
         public_c_def = ['{'] + textwrap.wrap(

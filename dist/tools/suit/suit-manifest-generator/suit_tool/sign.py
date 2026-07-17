@@ -24,6 +24,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric import mldsa
 from cryptography.hazmat.primitives.asymmetric import utils as asymmetric_utils
 from cryptography.hazmat.primitives import serialization as ks
 
@@ -41,7 +42,7 @@ def get_cose_es_bytes(options, private_key, sig_val):
     signature_bytes = r.to_bytes(ssize//8, byteorder='big') + s.to_bytes(ssize//8, byteorder='big')
     return signature_bytes
 
-def get_cose_ed25519_bytes(options, private_key, sig_val):
+def get_cose_raw_sign_bytes(options, private_key, sig_val):
     return private_key.sign(sig_val)
 
 def get_hsslms_bytes(options, private_key, sig_val):
@@ -65,6 +66,12 @@ def main(options):
             options.key_type = 'ES{}'.format(private_key.key_size)
         elif isinstance(private_key, ed25519.Ed25519PrivateKey):
             options.key_type = 'EdDSA'
+        elif isinstance(private_key, mldsa.MLDSA44PrivateKey):
+            options.key_type = 'ML-DSA-44'
+        elif isinstance(private_key, mldsa.MLDSA65PrivateKey):
+            options.key_type = 'ML-DSA-65'
+        elif isinstance(private_key, mldsa.MLDSA87PrivateKey):
+            options.key_type = 'ML-DSA-87'
         else:
             LOG.critical('Unrecognized key: {}'.format(type(private_key).__name__))
             return 1
@@ -73,6 +80,9 @@ def main(options):
             'ES384' : hashes.Hash(hashes.SHA384(), backend=default_backend()),
             'ES512' : hashes.Hash(hashes.SHA512(), backend=default_backend()),
             'EdDSA' : hashes.Hash(hashes.SHA256(), backend=default_backend()),
+            'ML-DSA-44' : hashes.Hash(hashes.SHA256(), backend=default_backend()),
+            'ML-DSA-65' : hashes.Hash(hashes.SHA256(), backend=default_backend()),
+            'ML-DSA-87' : hashes.Hash(hashes.SHA256(), backend=default_backend()),
         }.get(options.key_type)
     except:
         LOG.critical('Non-library key type not implemented')
@@ -103,8 +113,11 @@ def main(options):
         'ES256' : get_cose_es_bytes,
         'ES384' : get_cose_es_bytes,
         'ES512' : get_cose_es_bytes,
-        'EdDSA' : get_cose_ed25519_bytes,
+        'EdDSA' : get_cose_raw_sign_bytes,
         'HSS-LMS' : get_hsslms_bytes,
+        'ML-DSA-44' : get_cose_raw_sign_bytes,
+        'ML-DSA-65' : get_cose_raw_sign_bytes,
+        'ML-DSA-87' : get_cose_raw_sign_bytes,
     }.get(options.key_type)(options, private_key, Sig_structure)
 
     cose_signature.signature = SUITBytes().from_suit(signature_bytes)

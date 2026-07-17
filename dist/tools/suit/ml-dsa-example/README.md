@@ -7,6 +7,14 @@ signs a message, and emits `pubkey.h` / `signature.h`. `wolfcrypt-sample.c`
 (C / wolfCrypt) then generates its own keypair as a smoke test **and** verifies
 the Python-produced signature, proving the two implementations interoperate.
 
+This crypto is now also wired into RIOT's actual SUIT manifest-signing
+tooling: `suit-manifest-generator/bin/suit-tool keygen -t ml-dsa-65` and
+`suit-tool sign` support ML-DSA the same way they support Ed25519 — see the
+"ML-DSA (post-quantum) manifest signing" note in
+`examples/advanced/suit_update/CLAUDE.md` for usage and its current
+limitations (manifest signing only; on-device verification isn't
+implemented yet since `pkg/libcose` has no PQC support).
+
 ## 1. Install build dependencies
 
 ```bash

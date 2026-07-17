@@ -20,6 +20,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric import mldsa
 from cryptography.hazmat.primitives.asymmetric import utils as asymmetric_utils
 from cryptography.hazmat.primitives import serialization as ks
 
@@ -34,6 +35,9 @@ KeyGenerators = {
     'secp384r1' : lambda o: ec.generate_private_key(ec.SECP384R1(), default_backend()),
     'secp521r1' : lambda o: ec.generate_private_key(ec.SECP521R1(), default_backend()),
     'ed25519' : lambda o: ed25519.Ed25519PrivateKey.generate(),
+    'ml-dsa-44' : lambda o: mldsa.MLDSA44PrivateKey.generate(),
+    'ml-dsa-65' : lambda o: mldsa.MLDSA65PrivateKey.generate(),
+    'ml-dsa-87' : lambda o: mldsa.MLDSA87PrivateKey.generate(),
 }
 OutputFormaters = {
     'pem' : lambda pk: pk.private_bytes(ks.Encoding.PEM, ks.PrivateFormat.PKCS8, ks.NoEncryption()),
