@@ -129,6 +129,25 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
 #define ED25519_SMALL
 #endif
 
+#ifdef MODULE_WOLFCRYPT_MLDSA
+#define WOLFSSL_HAVE_MLDSA
+#define WOLFSSL_MLDSA_NO_CTX
+/* ML-DSA needs SHAKE-128/256 (MODULE_WOLFCRYPT_SHA3 above only turns on
+ * WOLFSSL_SHA3, not the SHAKE XOF variants dilithium/wc_mldsa need). */
+#define WOLFSSL_SHAKE128
+#define WOLFSSL_SHAKE256
+/* Needed to import a raw public key (wc_MlDsaKey_ImportPubRaw), as done
+ * with the compiled-in SUIT trusted public key. */
+#define WOLFSSL_MLDSA_PUBLIC_KEY
+/* SUIT firmware only ever verifies manifests, never signs on-device -
+ * use wolfCrypt's smallest-footprint verify-only build. */
+#define WOLFSSL_MLDSA_VERIFY_ONLY
+#define WOLFSSL_MLDSA_VERIFY_SMALL_MEM
+#define WOLFSSL_MLDSA_VERIFY_NO_MALLOC
+#define WOLFSSL_NO_ML_DSA_44
+#define WOLFSSL_NO_ML_DSA_87
+#endif
+
 #undef NO_AES
 #undef NO_CODING
 #undef NO_CMAC

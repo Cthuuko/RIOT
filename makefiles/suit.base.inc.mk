@@ -19,6 +19,26 @@ SUIT_KEY_SIGN ?= $(word 1, $(SUIT_KEY))
 # ML-DSA signatures (requires OpenSSL 3.5+). All keys in SUIT_KEY must use
 # the same algorithm.
 SUIT_KEY_ALGO ?= ed25519
+# OpenSSL 3.5+ defaults to writing ML-DSA private keys with both the FIPS 204
+# seed *and* the expanded secret key in a combined ASN.1 CHOICE ("seed-priv"
+# format). Python's `cryptography` (used by suit-tool) can't currently parse
+# that combined form - force seed-only output, which it does support. This
+# provparam is silently ignored for non-ML-DSA algorithms.
+SUIT_KEY_GENPKEY_ARGS ?= $(if $(filter ml-dsa-%,$(SUIT_KEY_ALGO)),-provparam ml-dsa.output_formats=seed-only)
+
+# ML-DSA-65 needs on-device verification support (sys/suit's
+# suit_algo_mldsa65 module, wired to a wolfCrypt-backed libcose backend -
+# the app Makefile must add `USEMODULE += suit_algo_mldsa65` itself when
+# SUIT_KEY_ALGO=ml-dsa-65, since module selection here runs too late,
+# after dependency resolution). The backend sources wolfCrypt's ML-DSA code
+# from a local, pre-configured wolfSSL checkout (built with
+# --enable-dilithium) rather than RIOT's own pinned wolfssl pkg fetch, which
+# predates wolfSSL's ML-DSA support - see
+# examples/advanced/suit_update/CLAUDE.md for details/caveats.
+ifeq (ml-dsa-65,$(SUIT_KEY_ALGO))
+  export PKG_SOURCE_LOCAL_WOLFSSL ?= $(RIOTBASE)/dist/tools/suit/ml-dsa-example/wolfssl
+endif
+
 XDG_DATA_HOME ?= $(HOME)/.local/share
 
 ifeq (1, $(RIOT_CI_BUILD))
@@ -52,10 +72,10 @@ $(SUIT_SEC): | $(CLEAN)
 	if [ -z "$(RIOT_CI_BUILD)" ]; then read encryption; else encryption=0; fi;	\
 	case $$encryption in								\
 		0)									\
-			openssl genpkey -algorithm $(SUIT_KEY_ALGO) -out $@;		\
+			openssl genpkey -algorithm $(SUIT_KEY_ALGO) $(SUIT_KEY_GENPKEY_ARGS) -out $@;		\
 			;;								\
 		1)									\
-			openssl genpkey -algorithm $(SUIT_KEY_ALGO) -aes-256-cbc -out $@ || :;	\
+			openssl genpkey -algorithm $(SUIT_KEY_ALGO) $(SUIT_KEY_GENPKEY_ARGS) -aes-256-cbc -out $@ || :;	\
 			;;								\
 		*)									\
 			echo "Invalid choice";						\

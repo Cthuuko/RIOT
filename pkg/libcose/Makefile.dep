@@ -19,6 +19,11 @@ endif
 ifneq (,$(filter libcose_crypt_riot,$(USEMODULE)))
   USEMODULE += crypto
 endif
+ifneq (,$(filter libcose_crypt_wolfcrypt_mldsa,$(USEMODULE)))
+  USEPKG += wolfssl
+  USEMODULE += wolfcrypt
+  USEMODULE += wolfcrypt_mldsa
+endif
 
 DEFAULT_MODULE += libcose_crypt_init
 DEFAULT_MODULE += auto_init_libcose_crypt

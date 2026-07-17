@@ -40,8 +40,14 @@ bool suit_get_public_key(uint8_t idx, cose_key_t *pkey)
 
     /* Initialize key from hardcoded public key */
     cose_key_init(pkey);
+#if IS_USED(MODULE_SUIT_ALGO_MLDSA65)
+    /* curve argument is unused for non-EC key types, see cose_key_set_keys() */
+    cose_key_set_keys(pkey, COSE_EC_CURVE_ED25519, COSE_ALGO_MLDSA65,
+                      (void *)public_key[idx], NULL, NULL);
+#else
     cose_key_set_keys(pkey, COSE_EC_CURVE_ED25519, COSE_ALGO_EDDSA,
                       (void *)public_key[idx], NULL, NULL);
+#endif
     return true;
 }
 

@@ -108,17 +108,51 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   keys/native_ed25519.pem`, then build with `SUIT_KEY_DIR=<dir>
   SUIT_KEY=native_ed25519 make ...` and sign with `-k keys/native_ed25519.pem`
   so the embedded pubkey matches the signing key.
-- **ML-DSA (post-quantum) manifest signing is supported**, tooling-only:
-  `SUIT_KEY_ALGO=ml-dsa-65 make suit/genkey` (or `suit-tool keygen -t
-  ml-dsa-65`) generates an ML-DSA-65 key, `%.pem.pub`/`public_key.h`
-  generation and `suit-tool sign` both handle it like Ed25519 (see
-  `dist/tools/suit/ml-dsa-example/README.md` for the crypto background).
-  Requires OpenSSL 3.5+ and a `cryptography` build with ML-DSA support.
-  **On-device verification is not implemented** — `pkg/libcose` (used by
-  `sys/suit/handlers_envelope.c`) has no PQC algorithm support, so firmware
-  built with an ML-DSA key will still reject the manifest at the
-  `_auth_handler`/`cose_sign_verify` step. This is a known, deliberate gap,
-  not a bug.
+- **ML-DSA-65 (post-quantum) manifest signing AND on-device verification are
+  both supported**: `SUIT_KEY_ALGO=ml-dsa-65 make -C
+  examples/advanced/suit_update BOARD=native64 all` generates/signs with an
+  ML-DSA-65 key (`suit/genkey`, `%.pem.pub`, `public_key.h` generation, and
+  `suit-tool sign` all handle it like Ed25519 — see
+  `dist/tools/suit/ml-dsa-example/README.md` for the crypto background) and
+  compiles firmware that verifies it, via a new `libcose_crypt_wolfcrypt_mldsa`
+  backend (`pkg/libcose/patches/0002-...patch`) calling wolfCrypt's
+  `wc_MlDsaKey_VerifyCtx()` (empty context — plain `wc_MlDsaKey_Verify()` is
+  **not** interoperable with signatures produced by Python's `cryptography`
+  library, confirmed the hard way; see the comment in
+  `pkg/libcose/patches/0002-cose-crypto-add-mldsa65-algorithm.patch`).
+  Requires OpenSSL 3.5+ (for `openssl genpkey -algorithm ml-dsa-65
+  -provparam ml-dsa.output_formats=seed-only` — `cryptography` can't parse
+  OpenSSL's default combined seed+expanded-key PKCS8 encoding, only the
+  seed-only one; `makefiles/suit.base.inc.mk`'s `SUIT_KEY_GENPKEY_ARGS`
+  handles this automatically) and a `cryptography` build with ML-DSA support.
+  - wolfCrypt's ML-DSA source is **not** taken from RIOT's own pinned
+    `pkg/wolfssl` fetch (too old, predates wolfSSL's ML-DSA support) but from
+    the local, already-`--enable-dilithium`-configured checkout at
+    `dist/tools/suit/ml-dsa-example/wolfssl`, via RIOT's `PKG_SOURCE_LOCAL_*`
+    package-override mechanism (`pkg/local.mk`) — set automatically by
+    `makefiles/suit.base.inc.mk` when `SUIT_KEY_ALGO=ml-dsa-65`.
+  - **Caveat**: `pkg/local.mk` fully `cp -a`s that local checkout (~1.1GB,
+    including its own `.git` and host build artifacts) into `build/pkg/wolfssl`
+    on every clean/prepare — slow, but correct — and **skips**
+    `pkg/wolfssl`'s own small patch set (TLSX/gettimeofday fixes) entirely,
+    since local-source overrides bypass RIOT's normal `git am` patch
+    pipeline. Neither patch touches anything the ML-DSA path uses, but it's
+    a real gap if something else in that tree needs them.
+  - A native-only build quirk already fixed in the vendored checkout itself
+    (`wolfcrypt/src/wc_port.c`, `wc_accept_cloexec()`): RIOT's own
+    `posix_sockets` `<sys/socket.h>` shim shadows glibc's real header on
+    native and doesn't declare `accept4()`, even with `_GNU_SOURCE` set —
+    guarded out via `#if !defined(WOLFSSL_RIOT_OS) && ...`. Real (embedded)
+    boards never hit this, since `__unix__` isn't defined there.
+  - Verified end-to-end on `BOARD=native64` via `suit fetch
+    file://<path-to-signed-manifest>` (no networking/tap needed for that
+    transport) — a real `suit-tool`-signed ML-DSA-65 manifest verifies via
+    `sys/suit/handlers_envelope.c`'s normal `_auth_handler`/`cose_sign_verify`
+    path, and a manifest signed with a different key, or a tampered
+    signature, is correctly rejected. RAM/flash feasibility on real
+    constrained boards (default `samr21-xpro`, 32KB RAM) is unverified —
+    `WOLFSSL_MLDSA_VERIFY_ONLY`/`_SMALL_MEM`/`_NO_MALLOC` are enabled to
+    minimize footprint, but this hasn't been tested on real hardware.
 - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
 - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —

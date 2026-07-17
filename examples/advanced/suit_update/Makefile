@@ -40,6 +40,13 @@ QUIET ?= 1
 USEMODULE += suit suit_transport_coap
 USEMODULE += nanocoap_server_auto_init
 
+# SUIT_KEY_ALGO=ml-dsa-65 selects on-device ML-DSA-65 verification (must be
+# added to USEMODULE before dependency resolution runs in Makefile.include,
+# so this can't live in the later-included makefiles/suit.base.inc.mk).
+ifeq (ml-dsa-65,$(SUIT_KEY_ALGO))
+  USEMODULE += suit_algo_mldsa65
+endif
+
 # enable VFS transport (only works on boards with external storage)
 USEMODULE += suit_transport_vfs
 USEMODULE += vfs_default

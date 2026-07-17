@@ -489,6 +489,7 @@ PSEUDOMODULES += stm32_eth_tracing
 PSEUDOMODULES += stm32mp1_eng_mode
 PSEUDOMODULES += suit_transport_%
 PSEUDOMODULES += suit_storage_%
+PSEUDOMODULES += suit_algo_%
 PSEUDOMODULES += sys_bus_%
 PSEUDOMODULES += tiny_strerror_as_strerror
 PSEUDOMODULES += tiny_strerror_minimal

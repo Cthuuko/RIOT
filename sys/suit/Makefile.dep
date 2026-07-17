@@ -2,6 +2,10 @@ USEPKG += nanocbor
 USEPKG += libcose
 USEMODULE += uuid
 
+ifneq (,$(filter suit_algo_mldsa65,$(USEMODULE)))
+  USEMODULE += libcose_crypt_wolfcrypt_mldsa
+endif
+
 ifeq (,$(filter libcose_crypt_%,$(USEMODULE)))
   USEMODULE += libcose_crypt_c25519
 endif

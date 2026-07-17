@@ -8,6 +8,11 @@ endif
 
 ifeq (native,$(CPU))
   CFLAGS += -Wno-array-parameter
+  # wc_port.c's wc_accept_cloexec() uses glibc's accept4(), only declared
+  # when _GNU_SOURCE is defined (needed once wolfcrypt_asn - pulled in by
+  # wolfcrypt_mldsa - is active on native; other wolfcrypt modules don't
+  # reach that code path).
+  CFLAGS += -D_GNU_SOURCE
 endif
 
 SUBMODULES += 1
@@ -37,5 +42,14 @@ SRC +=  ge_low_mem.c
 SRC +=  sp_int.c
 SRC +=  sp_c32.c
 
+#-------------------------------------------------------------#
+# Optional CRYPTO source files, enabled by pseudomodule        #
+#-------------------------------------------------------------#
+
+# wc_mldsa.c is not auto-added by the wolfcrypt_% submodule convention
+# (its name doesn't match the "wolfcrypt_mldsa" pseudomodule suffix)
+ifneq (,$(filter wolfcrypt_mldsa,$(USEMODULE)))
+  SRC += wc_mldsa.c
+endif
 
 include $(RIOTBASE)/Makefile.base
