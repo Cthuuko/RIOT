@@ -139,6 +139,10 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
 /* Needed to import a raw public key (wc_MlDsaKey_ImportPubRaw), as done
  * with the compiled-in SUIT trusted public key. */
 #define WOLFSSL_MLDSA_PUBLIC_KEY
+/* Keep only a pointer to the public key in MlDsaKey instead of a 1952-byte
+ * copy - the SUIT trusted key is a const array in flash and outlives any
+ * verify call, so no copy is needed and 2KB of RAM is saved. */
+#define WOLFSSL_MLDSA_ASSIGN_KEY
 /* SUIT firmware only ever verifies manifests, never signs on-device -
  * use wolfCrypt's smallest-footprint verify-only build. */
 #define WOLFSSL_MLDSA_VERIFY_ONLY

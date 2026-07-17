@@ -1,4 +1,4 @@
-From a80e820fbb88bb6d6b986d09e1550df582a8c354 Mon Sep 17 00:00:00 2001
+From 6e283362ca533000b112869eb127c6ea5c20bcdf Mon Sep 17 00:00:00 2001
 From: RIOT buildsystem <buildsystem@riot>
 Date: Fri, 17 Jul 2026 00:00:00 +0000
 Subject: [PATCH] cose/crypto: add ML-DSA-65 algorithm and wolfCrypt backend
@@ -9,15 +9,14 @@ wc_MlDsaKey_VerifyCtx() (empty context, matching how Python's
 `cryptography` library signs), selected via -DCRYPTO_WOLFCRYPT_MLDSA. No
 cose_crypto_sign_mldsa65() is provided since SUIT firmware only ever
 verifies manifests, never signs them on-device.
-
 ---
- include/cose/crypto.h                     | 19 +++++++++++++
- include/cose/crypto/keysizes.h            | 15 ++++++++++
- include/cose/crypto/wolfcrypt_mldsa.h     | 41 ++++++++++++++++++++++++++++
- include/cose_defines.h                    |  1 +
- src/cose_crypto.c                         |  8 ++++++
- src/crypt/wolfcrypt_mldsa.c               | 49 ++++++++++++++++++++++++++++++
- 6 files changed, 133 insertions(+)
+ include/cose/crypto.h                 | 19 +++++++++
+ include/cose/crypto/keysizes.h        | 15 +++++++
+ include/cose/crypto/wolfcrypt_mldsa.h | 41 +++++++++++++++++++
+ include/cose_defines.h                |  1 +
+ src/cose_crypto.c                     |  8 ++++
+ src/crypt/wolfcrypt_mldsa.c           | 57 +++++++++++++++++++++++++++
+ 6 files changed, 141 insertions(+)
  create mode 100644 include/cose/crypto/wolfcrypt_mldsa.h
  create mode 100644 src/crypt/wolfcrypt_mldsa.c
 
@@ -32,9 +31,9 @@ index 6df6d14..61ee1f2 100644
 +#ifdef CRYPTO_WOLFCRYPT_MLDSA
 +#include "cose/crypto/wolfcrypt_mldsa.h"
 +#endif
-
+ 
  #include "cose/crypto/selectors.h"
-
+ 
 @@ -230,6 +233,22 @@ int cose_crypto_verify_ed25519(const cose_key_t *key, const uint8_t *sign, size_
   */
  void cose_crypto_keypair_ed25519(cose_key_t *key);
@@ -56,7 +55,7 @@ index 6df6d14..61ee1f2 100644
 + */
 +int cose_crypto_verify_mldsa65(const cose_key_t *key, const uint8_t *sign, size_t signlen, uint8_t *msg, uint64_t msglen);
  /** @} */
-
+ 
  /**
 diff --git a/include/cose/crypto/keysizes.h b/include/cose/crypto/keysizes.h
 index 6a939a8..32046c9 100644
@@ -65,7 +64,7 @@ index 6a939a8..32046c9 100644
 @@ -46,6 +46,21 @@ extern "C" {
   */
  #define COSE_CRYPTO_SIGN_ED25519_SIGNBYTES              64U
-
+ 
 +/**
 + * @brief ML-DSA-65 public key size
 + */
@@ -171,10 +170,10 @@ index 4dfd851..c818512 100644
      }
 diff --git a/src/crypt/wolfcrypt_mldsa.c b/src/crypt/wolfcrypt_mldsa.c
 new file mode 100644
-index 0000000..b5312d0
+index 0000000..7d83378
 --- /dev/null
 +++ b/src/crypt/wolfcrypt_mldsa.c
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,57 @@
 +/*
 + * Copyright (C) 2026 Freie Universitat Berlin
 + *
@@ -198,18 +197,26 @@ index 0000000..b5312d0
 +#include "cose/crypto/wolfcrypt_mldsa.h"
 +
 +#ifdef HAVE_ALGO_MLDSA65
++/* With WOLFSSL_MLDSA_VERIFY_NO_MALLOC, MlDsaKey embeds every verify work
++ * buffer (z/c/w/t1/w1e/h/block, >10KB on ML-DSA-65) - far too large for a
++ * stack frame on a 32KB-RAM target (as a stack local it silently overflowed
++ * the SUIT worker thread stack and corrupted the manifest buffer, making
++ * genuinely valid signatures fail verification). Static is safe: SUIT
++ * verification only ever runs on the single suit_worker thread. */
++static MlDsaKey _mldsa_key;
++
 +int cose_crypto_verify_mldsa65(const cose_key_t *key, const uint8_t *sign,
 +                                size_t signlen, uint8_t *msg, uint64_t msglen)
 +{
-+    MlDsaKey mldsa_key;
++    MlDsaKey *mldsa_key = &_mldsa_key;
 +    int verify_result = 0;
-+    int ret = wc_MlDsaKey_Init(&mldsa_key, NULL, INVALID_DEVID);
++    int ret = wc_MlDsaKey_Init(mldsa_key, NULL, INVALID_DEVID);
 +
 +    if (ret == 0) {
-+        ret = wc_MlDsaKey_SetParams(&mldsa_key, 3); /* category 3 = ML-DSA-65 */
++        ret = wc_MlDsaKey_SetParams(mldsa_key, 3); /* category 3 = ML-DSA-65 */
 +    }
 +    if (ret == 0) {
-+        ret = wc_MlDsaKey_ImportPubRaw(&mldsa_key, key->x,
++        ret = wc_MlDsaKey_ImportPubRaw(mldsa_key, key->x,
 +                                        COSE_CRYPTO_SIGN_MLDSA65_PUBLICKEYBYTES);
 +    }
 +    if (ret == 0) {
@@ -217,13 +224,13 @@ index 0000000..b5312d0
 +         * library (used by suit-tool sign) signs - plain wc_MlDsaKey_Verify()
 +         * is not interoperable with it, confirmed against
 +         * dist/tools/suit/ml-dsa-example/wolfcrypt-sample.c. */
-+        ret = wc_MlDsaKey_VerifyCtx(&mldsa_key, sign, signlen, NULL, 0,
++        ret = wc_MlDsaKey_VerifyCtx(mldsa_key, sign, signlen, NULL, 0,
 +                                     msg, msglen, &verify_result);
 +    }
-+    wc_MlDsaKey_Free(&mldsa_key);
++    wc_MlDsaKey_Free(mldsa_key);
 +    return (ret == 0 && verify_result == 1) ? 0 : -1;
 +}
 +#endif /* HAVE_ALGO_MLDSA65 */
---
+-- 
 2.34.1
 

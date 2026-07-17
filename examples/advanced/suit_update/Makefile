@@ -45,6 +45,19 @@ USEMODULE += nanocoap_server_auto_init
 # so this can't live in the later-included makefiles/suit.base.inc.mk).
 ifeq (ml-dsa-65,$(SUIT_KEY_ALGO))
   USEMODULE += suit_algo_mldsa65
+  # sys/suit/transport/worker.c's manifest fetch buffer defaults to 640B,
+  # sized for an Ed25519 manifest (64B signature). An ML-DSA-65 manifest
+  # embeds a 3309B signature, pushing the whole CBOR envelope to ~3.7KB -
+  # bump the buffer or suit_handle_url() fails with "error getting manifest"
+  # (nanocoap_get_blockwise_url_to_buf()/vfs_file_to_buffer() both reject
+  # anything that doesn't fit). 3840 fits the ~3.75KB envelope while saving
+  # RAM over a rounder 4096 on 32KB-RAM boards.
+  CFLAGS += -DSUIT_MANIFEST_BUFSIZE=3840
+  # The ML-DSA verify work state lives in a static MlDsaKey (see
+  # pkg/libcose's wolfcrypt_mldsa.c backend), not on the worker stack, so
+  # the default 6KB stack suffices for the verify itself; shrink it to 4KB
+  # to fit the ~10KB static key state within the 32KB RAM budget.
+  CFLAGS += -DSUIT_WORKER_STACKSIZE=4096
 endif
 
 # enable VFS transport (only works on boards with external storage)
