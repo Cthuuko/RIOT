@@ -1,12 +1,15 @@
-/* 
+/*
  * Minimal example: generate an ML-DSA-65 (FIPS 204 / Dilithium Level 3)
- * keypair, sign a message, and verify the signature using wolfCrypt.
+ * keypair, sign a message, and verify the signature using wolfCrypt. Also
+ * verifies a signature produced by test_ml_dsa_key.py (Python's
+ * `cryptography` library) to demonstrate cross-implementation interop.
  *
  * Build:
- *   gcc wolfcrypt_mldsa65_sample.c -o wolfcrypt_mldsa65_sample -lwolfssl
+ *   python3 test_ml_dsa_key.py
+ *   gcc -DWOLFSSL_MLDSA_NO_CTX wolfcrypt-sample.c -o mldsa-example -lwolfssl
  *
  * Run:
- *   ./wolfcrypt_mldsa65_sample
+ *   ./mldsa-example
  */
 
 #include <stdio.h>
@@ -25,8 +28,8 @@
 /* ML-DSA-65 corresponds to NIST security category 3 in wolfCrypt's API */
 #define ML_DSA_SECURITY_CATEGORY 3
 
-#include </home/kuuko/masterthesis/RIOT/dist/tools/suit/ml-dsa-example/signature.h>
-#include </home/kuuko/masterthesis/RIOT/dist/tools/suit/ml-dsa-example/pubkey.h>
+#include "signature.h"
+#include "pubkey.h"
 
 static void print_hex(const char *label, const byte *data, word32 len)
 {
@@ -138,13 +141,14 @@ int main(void)
     ret = wc_MlDsaKey_Init(&key_custom, NULL, INVALID_DEVID);
     if (ret != 0) {
         printf("wc_MlDsaKey_Init failed: %d\n", ret);
-        goto cleanup_rng;
+        goto cleanup_key;
     }
 
     /* 3. Select ML-DSA-65 (NIST security category 3) */
     ret = wc_MlDsaKey_SetParams(&key_custom, ML_DSA_SECURITY_CATEGORY);
     if (ret != 0) {
         printf("wc_MlDsaKey_SetParams failed: %d\n", ret);
+        wc_MlDsaKey_Free(&key_custom);
         goto cleanup_key;
     }
 
@@ -152,36 +156,34 @@ int main(void)
     ret = wc_MlDsaKey_ImportPubRaw(&key_custom, public_key, sizeof(public_key));
     if (ret != 0) {
         printf("wc_MlDsaKey_ImportPubRaw failed: %d\n", ret);
+        wc_MlDsaKey_Free(&key_custom);
         goto cleanup_key;
     }
 
-    ret = wc_MlDsaKey_GetPrivLen(&key_custom, (int *)&privSz);
-    if (ret != 0) { printf("GetPrivLen failed: %d\n", ret); goto cleanup_key; }
-
-    ret = wc_MlDsaKey_GetPubLen(&key_custom, (int *)&pubSz);
-    if (ret != 0) { printf("GetPubLen failed: %d\n", ret); goto cleanup_key; }
-
-    priv = (byte *)malloc(privSz);
-    pub  = (byte *)malloc(pubSz);
-
     print_hex("Public imported key",  public_key,  sizeof(public_key));
-    print_hex("Imported signautre",  signature,  sizeof(signature));
+    print_hex("Imported signature",   signature,   sizeof(signature));
 
+    /* Message must match the one signed in test_ml_dsa_key.py */
+    const char *importedMsg = "HelloQuantumWorld";
+    word32 importedMsgLen = (word32)strlen(importedMsg);
 
-    const byte message_to_verify[] = "HelloQuantumWorld";
-
-    msgLen = (word32)strlen(message_to_verify);
-
-    /* 8. Verify the signature against the original message */
-    ret = wc_MlDsaKey_VerifyCtx(&key_custom, signature, sizeof(signature), NULL, 0, message_to_verify, msgLen, &verifyResult);
+    /* 10. Verify the Python-produced signature. VerifyCtx with an empty
+     * context matches how the Python `cryptography` library signs here. */
+    verifyResult = 0;
+    ret = wc_MlDsaKey_VerifyCtx(&key_custom, signature, sizeof(signature),
+                                NULL, 0, (const byte *)importedMsg,
+                                importedMsgLen, &verifyResult);
     if (ret != 0) {
         printf("wc_MlDsaKey_VerifyCtx failed: %d\n", ret);
+        wc_MlDsaKey_Free(&key_custom);
         goto cleanup_buffers;
     }
 
-    printf("\nMessage: \"%s\"\n", message_to_verify);
-    printf("Signature verification: %s\n",
+    printf("\nMessage: \"%s\"\n", importedMsg);
+    printf("Imported signature verification: %s\n",
            verifyResult == 1 ? "VALID" : "INVALID");
+
+    wc_MlDsaKey_Free(&key_custom);
 
 cleanup_buffers:
     free(priv);

@@ -1,125 +1,99 @@
 #!/usr/bin/env python3
+"""Generate an ML-DSA keypair, sign a message, and emit C headers.
 
-from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PrivateKey
-from cryptography.hazmat.primitives import serialization
-import logging
-import binascii
+Writes the private/public keys (DER + raw) plus `pubkey.h` and `signature.h`,
+which wolfcrypt-sample.c includes to verify the signature produced here. This
+demonstrates ML-DSA (FIPS 204) signing as a post-quantum alternative to the
+Ed25519 keys RIOT's SUIT tooling uses by default.
+"""
+
 import argparse
-import json
 import os
-import uuid
-import base64
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.mldsa import (
+    MLDSA44PrivateKey,
+    MLDSA65PrivateKey,
+    MLDSA87PrivateKey,
+)
+
+# The C side (wolfCrypt) only builds the ML-DSA-65 verify path in this example,
+# so 65 is the default. 44/87 are exposed for experimentation.
+ML_DSA_LEVELS = {
+    "44": MLDSA44PrivateKey,
+    "65": MLDSA65PrivateKey,
+    "87": MLDSA87PrivateKey,
+}
+
+MESSAGE = b"HelloQuantumWorld"
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--level', '-l', help='Security Level of ML_DSA. Valid Values: [0, 1, 2]',
-                        default="0")
+    parser.add_argument('--level', '-l', choices=sorted(ML_DSA_LEVELS),
+                        default="65",
+                        help='ML-DSA parameter set (44, 65, or 87)')
     parser.add_argument('--output', '-o', default="dsa.pem",
-                        help='Manifest output binary file path')
+                        help='Private key output file path (DER-encoded)')
     return parser.parse_args()
 
 
+def write_file(path, data):
+    mode = "wb" if isinstance(data, (bytes, bytearray)) else "w"
+    with open(os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600),
+              mode) as f:
+        f.write(data)
+
+
+def format_byte_array(name, data):
+    lines = [f"const byte {name}[{len(data)}] = {{"]
+    for i in range(0, len(data), 12):
+        chunk = data[i:i + 12]
+        lines.append("    " + ", ".join(f"0x{b:02x}" for b in chunk) + ",")
+    lines.append("};\n")
+    return "\n".join(lines)
+
+
 def main(args):
-    LOG = logging.getLogger(__name__)
+    print(f"Trying out ML-DSA-{args.level} - START")
 
-    print("Trying out ML-DSA - START")
+    private_key = ML_DSA_LEVELS[args.level].generate()
 
-    output = args.output
-    output_raw = output + ".raw"
-    output_public = output + ".public"
-    output_public_raw = output + ".public.raw"
-    private_key = MLDSA65PrivateKey.generate()
-    pk_bytes = private_key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
-    pk_bytes_raw = private_key.private_bytes_raw()
+    pk_der = private_key.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption())
+    pk_raw = private_key.private_bytes_raw()
 
+    public_key = private_key.public_key()
+    pub_pem = public_key.public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo)
+    pub_raw = public_key.public_bytes_raw()
 
-    context = b"SUIT-Update"
-    message_to_verify = b"HelloQuantumWorld"
+    signature = private_key.sign(MESSAGE)
 
-    signature = private_key.sign(message_to_verify)
+    write_file(args.output, pk_der)
+    write_file(args.output + ".raw", pk_raw)
+    write_file(args.output + ".public", pub_pem)
+    write_file(args.output + ".public.raw", pub_raw)
 
-    pem = """MDQCAQAwCwYJYIZIAWUDBAMSBCKAIK3vddkpQYT5z6bvP6j6Trdd0KzBamDzQUpR"""
+    print(f"Public key: {len(pub_raw)} bytes")
+    print(f"Signature:  {len(signature)} bytes")
 
-    raw = base64.b64decode(pem)
+    # Sanity check: reload the private key from its 32-byte seed and confirm
+    # the public key still verifies the signature (raises on failure).
+    seed = pk_raw[:32]
+    reloaded = ML_DSA_LEVELS[args.level].from_seed_bytes(seed)
+    reloaded.public_key().verify(signature, MESSAGE)
+    print("Round-trip verify from seed: OK")
 
-    #print("Private Key Bytes RAW: ", pk_bytes_raw)
-    #print(len(pk_bytes_raw))
-    #print("PEM: ", pk_bytes)
-    #print(len(pk_bytes))
-    #print("PEMtoRAW: ", raw)
-    #print(len(raw))
+    write_file("pubkey.h", format_byte_array("public_key", pub_raw))
+    write_file("signature.h", format_byte_array("signature", signature))
 
-    #print(private_key)
-
-
-
-    with open(os.open(output, os.O_CREAT | os.O_WRONLY, 0o600), "wb") as f:
-        f.write(pk_bytes)
-    
-    with open(os.open(output_raw, os.O_CREAT | os.O_WRONLY, 0o600), "wb") as f:
-        f.write(pk_bytes_raw)
-
-    with open(os.open(output_raw, os.O_CREAT | os.O_WRONLY, 0o600), "wb") as f:
-        f.write(pk_bytes_raw)
-
-    public_key = private_key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
-    pub_bytes_raw = private_key.public_key().public_bytes_raw()
-
-    with open(os.open(output_public, os.O_CREAT | os.O_WRONLY, 0o600), "wb") as f:
-        f.write(public_key)
-
-    with open(os.open(output_public_raw, os.O_CREAT | os.O_WRONLY, 0o600), "wb") as f:
-        f.write(pub_bytes_raw)
-
-    print("Public Key Bytes RAW First 32 bytes: ", pub_bytes_raw[:32])
-    print(len(pub_bytes_raw))
-    print("Signature Bytes RAW First 32 bytes: ", signature[:32])
-    print(len(signature))
-
-    with open(output_raw, "rb") as f:
-        der_bytes = f.read()
-        #print(der_bytes[:32])
-        #print(len(der_bytes[:32]))
-        seed_bytes = der_bytes[:32]
-
-    private_key_loaded = MLDSA65PrivateKey.from_seed_bytes(seed_bytes)
-    public_key_loaded = private_key_loaded.public_key()
-
-    public_key_loaded.verify(signature, message_to_verify)
-
-    print("Trying out ML-DSA - END")
-    
-
-    lines = []
-    lines.append(f"const byte public_key[{len(pub_bytes_raw)}] = {{")
- 
-    for i in range(0, len(pub_bytes_raw), 4):
-        chunk = pub_bytes_raw[i:i + 4]
-        hex_values = ", ".join(f"0x{b:02x}" for b in chunk)
-        lines.append(f"    {hex_values},")
- 
-    lines.append("};")
-    pub_key_arr = "\n".join(lines)
-
-    with open(os.open("pubkey.h", os.O_CREAT | os.O_WRONLY, 0o600), "w") as f:
-        f.write(pub_key_arr)
-
-    lines = []
-    lines.append(f"const byte signature[{len(signature)}] = {{")
- 
-    for i in range(0, len(signature), 4):
-        chunk = signature[i:i + 4]
-        hex_values = ", ".join(f"0x{b:02x}" for b in chunk)
-        lines.append(f"    {hex_values},")
- 
-    lines.append("};")
-    sign_arr = "\n".join(lines)
-
-    with open(os.open("signature.h", os.O_CREAT | os.O_WRONLY, 0o600), "w") as f:
-        f.write(sign_arr)
+    print(f"Trying out ML-DSA-{args.level} - END")
 
 
 if __name__ == "__main__":
-    _args = parse_arguments()
-    main(_args)
+    main(parse_arguments())

@@ -1,5 +1,12 @@
 # ML-DSA example with Python cryptography and C wolfCrypt
 
+This example demonstrates ML-DSA (FIPS 204) post-quantum signatures as an
+alternative to the Ed25519 keys RIOT's SUIT tooling uses by default.
+`test_ml_dsa_key.py` (Python's `cryptography` library) generates a keypair,
+signs a message, and emits `pubkey.h` / `signature.h`. `wolfcrypt-sample.c`
+(C / wolfCrypt) then generates its own keypair as a smoke test **and** verifies
+the Python-produced signature, proving the two implementations interoperate.
+
 ## 1. Install build dependencies
 
 ```bash
@@ -59,13 +66,28 @@ grep -i dilithium /usr/local/include/wolfssl/options.h
 nm -D /usr/local/lib/libwolfssl.so | grep -i MlDsaKey
 ```
 
-## 3. Compile your program against it
+## 3. Run the example
+
+First generate the keys, signature, and C headers with Python. The signature
+generator must run before compiling, since the C sample `#include`s the
+generated `pubkey.h` and `signature.h`:
 
 ```bash
-python3 test_ml_dsa_key.py
+python3 test_ml_dsa_key.py            # defaults to ML-DSA-65
+# python3 test_ml_dsa_key.py -l 87    # or 44 / 87 for other parameter sets
+```
+
+Then compile and run the C sample against the installed wolfSSL:
+
+```bash
 gcc -DWOLFSSL_MLDSA_NO_CTX wolfcrypt-sample.c -o mldsa-example -lwolfssl
 ./mldsa-example
 ```
+
+The sample verifies both its own freshly generated signature and the one
+produced by Python (`Imported signature verification: VALID`). Note the C verify
+path here is built only for ML-DSA-65, so keep the Python side at the default
+level `65` when running the interop check.
 
 If the linker can't find `-lwolfssl`, try an explicit path or re-run
 `sudo ldconfig`:
