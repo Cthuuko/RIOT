@@ -93,14 +93,26 @@ export SUIT_KEY=ed25519
 
 (`SUIT_KEY_ALGO` defaults to `ed25519` — no need to set it.)
 
+**These exports only exist in the terminal you ran them in.** The
+walkthrough uses several terminals; the commands in A.5 and A.7 repeat the
+variables inline so they are safe to paste into any terminal. If you drop
+them, make silently falls back to `~/.local/share/RIOT/keys/default.pem`
+(wrong key — see the gotchas at the bottom).
+
 ## A.5 — Flash the board
 
 Close any running `make term` / ethos terminal first — flashing and ethos
 both need exclusive access to `/dev/ttyACM1`.
 
 ```sh
-BOARD=samr21-xpro make -C examples/advanced/suit_update clean flash -j4
+SUIT_KEY_DIR=~/masterthesis/RIOT/examples/advanced/suit_update/ed25519-keys \
+  SUIT_KEY=ed25519 \
+  BOARD=samr21-xpro make -C examples/advanced/suit_update clean flash -j4
 ```
+
+The key variables matter here too: this step bakes the key's **public**
+half into the firmware, and the device only accepts manifests signed with
+that same key.
 
 ## A.6 — Open the board's terminal (also carries the network link)
 
@@ -118,7 +130,9 @@ ping -c3 fe80::2%riot0
 
 ```sh
 APP_VER=$(date +%s)
-BOARD=samr21-xpro APP_VER=$APP_VER SUIT_COAP_SERVER=[2001:db8::1] \
+SUIT_KEY_DIR=~/masterthesis/RIOT/examples/advanced/suit_update/ed25519-keys \
+  SUIT_KEY=ed25519 \
+  BOARD=samr21-xpro APP_VER=$APP_VER SUIT_COAP_SERVER=[2001:db8::1] \
   make -C examples/advanced/suit_update suit/publish
 ```
 
@@ -170,12 +184,18 @@ export SUIT_KEY=mldsa65
 export SUIT_KEY_ALGO=ml-dsa-65
 ```
 
+Same caveat as A.4: exports are per-terminal, so B.5 and B.7 repeat the
+variables inline. Forgetting them is worse here — the build would fall
+back to the default Ed25519 configuration entirely.
+
 ## B.5 — Flash the board
 
 Close any running `make term` / ethos terminal first (same caveat as A.5).
 
 ```sh
-BOARD=samr21-xpro make -C examples/advanced/suit_update clean flash -j4
+SUIT_KEY_DIR=~/masterthesis/RIOT/examples/advanced/suit_update/mldsa-keys \
+  SUIT_KEY=mldsa65 SUIT_KEY_ALGO=ml-dsa-65 \
+  BOARD=samr21-xpro make -C examples/advanced/suit_update clean flash -j4
 ```
 
 This build embeds wolfCrypt's ML-DSA-65 verifier and needs the RAM/stack/
@@ -198,7 +218,9 @@ ping -c3 fe80::2%riot0
 
 ```sh
 APP_VER=$(date +%s)
-BOARD=samr21-xpro APP_VER=$APP_VER SUIT_COAP_SERVER=[2001:db8::1] \
+SUIT_KEY_DIR=~/masterthesis/RIOT/examples/advanced/suit_update/mldsa-keys \
+  SUIT_KEY=mldsa65 SUIT_KEY_ALGO=ml-dsa-65 \
+  BOARD=samr21-xpro APP_VER=$APP_VER SUIT_COAP_SERVER=[2001:db8::1] \
   make -C examples/advanced/suit_update suit/publish
 ```
 
@@ -234,3 +256,11 @@ reboot.
 - **Switching keys without reflashing will fail.** The verifying public
   key is baked into the firmware at flash time; `suit/publish` must use
   the same key the currently-flashed firmware trusts.
+- **`suit_tool.sign - Non-library key type not implemented` means the
+  wrong key file was picked up, not a missing feature.** It appears when
+  `SUIT_KEY_DIR`/`SUIT_KEY` weren't set for the command (e.g. a fresh
+  terminal without the A.4/B.4 exports), so signing fell back to
+  `~/.local/share/RIOT/keys/default.pem` — which Python's `cryptography`
+  may be unable to parse (for instance an ML-DSA key in OpenSSL's combined
+  seed+expanded format instead of seed-only). Re-run the command with the
+  key variables set, as written in A.7/B.7.
