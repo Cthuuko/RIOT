@@ -63,6 +63,14 @@ ifneq (,$(filter native native32 native64,$(BOARD)))
   CFLAGS += -DCONFIG_SUIT_STORAGE_RAM_REGIONS=2 -DCONFIG_SUIT_STORAGE_RAM_SIZE=2048
 endif
 
+# The nRF52840 dongle has no UART-to-USB bridge; its only host link is the
+# nRF52840's native USB. ethos rides on a hardware UART, so an ethos build
+# enumerates nothing on the dongle's USB. Network it over USB CDC-ECM
+# (USB Ethernet) with the shell on CDC-ACM instead.
+ifeq (nrf52840dongle,$(BOARD))
+  USE_ETHOS ?= 0
+endif
+
 # Change this to 0 to not use ethos
 USE_ETHOS ?= 1
 
@@ -85,6 +93,20 @@ ifeq (1,$(USE_ETHOS))
   IFACE ?= riot0
   TERMPROG = $(RIOTTOOLS)/ethos/ethos
   TERMFLAGS = $(IFACE) $(PORT)
+else ifeq (nrf52840dongle,$(BOARD))
+  # USB CDC-ECM (USB Ethernet) networking over the dongle's native USB, with
+  # the shell on CDC-ACM. The host side is driven by usb-cdc-ecm/start_network.sh
+  # (host fe80::1, device fe80::2, uhcpd pushes the prefix) instead of ethos.
+  USEMODULE += auto_init_usbus
+  USEMODULE += usbus_cdc_ecm
+  USEMODULE += stdio_cdc_acm
+  USEMODULE += gnrc_uhcpc
+
+  # IPv6 prefix delegated to the device over the CDC-ECM link
+  IPV6_PREFIX ?= 2001:db8::/64
+  TERMDEPS += host-tools
+  TERMPROG ?= sudo sh $(RIOTTOOLS)/usb-cdc-ecm/start_network.sh
+  TERMFLAGS ?= $(IPV6_PREFIX)
 else
   USEMODULE += netdev_default
 endif
