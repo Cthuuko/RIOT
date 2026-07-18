@@ -21,6 +21,12 @@ compiles from for that on-device path — see the "ML-DSA-65 (post-quantum)
 manifest signing AND on-device verification" note in
 `examples/advanced/suit_update/CLAUDE.md` for usage and caveats.
 
+Sibling variants of this example for the other two FIPS 204 parameter sets
+live in [ml-dsa-44/](ml-dsa-44/) and [ml-dsa-87/](ml-dsa-87/). Each has its
+own README, Python/C end-to-end test (linked against the `wolfssl/` build in
+this directory — no extra build step), and a `SUIT_ML_DSA_4x/87_INTEGRATION.md`
+describing the SUIT integration delta for that parameter set.
+
 ## 1. Install build dependencies
 
 ```bash
