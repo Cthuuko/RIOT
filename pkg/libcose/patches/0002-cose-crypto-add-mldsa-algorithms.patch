@@ -1,0 +1,363 @@
+From 3dc90777003104729036f65a7fe908c8cefccbe4 Mon Sep 17 00:00:00 2001
+From: RIOT buildsystem <buildsystem@riot>
+Date: Fri, 17 Jul 2026 00:00:00 +0000
+Subject: [PATCH] cose/crypto: add ML-DSA algorithms and wolfCrypt backend
+
+Adds COSE algorithm IDs -48/-49/-50 (RFC 9964: ML-DSA-44/65/87), their
+key/signature size constants, and a verify-only wolfCrypt backend
+(CRYPTO_WOLFCRYPT_MLDSA). Each parameter set is only advertised
+(HAVE_ALGO_MLDSAxx) if the wolfCrypt build actually contains it
+(WOLFSSL_NO_ML_DSA_xx compile-out switches).
+---
+ include/cose/crypto.h                 | 51 +++++++++++++++
+ include/cose/crypto/keysizes.h        | 45 +++++++++++++
+ include/cose/crypto/wolfcrypt_mldsa.h | 58 +++++++++++++++++
+ include/cose_defines.h                |  3 +
+ src/cose_crypto.c                     | 24 +++++++
+ src/crypt/wolfcrypt_mldsa.c           | 91 +++++++++++++++++++++++++++
+ 6 files changed, 272 insertions(+)
+ create mode 100644 include/cose/crypto/wolfcrypt_mldsa.h
+ create mode 100644 src/crypt/wolfcrypt_mldsa.c
+
+diff --git a/include/cose/crypto.h b/include/cose/crypto.h
+index 6df6d14..69ad508 100644
+--- a/include/cose/crypto.h
++++ b/include/cose/crypto.h
+@@ -51,6 +51,9 @@
+ #ifdef CRYPTO_RIOT
+ #include "cose/crypto/riot.h"
+ #endif
++#ifdef CRYPTO_WOLFCRYPT_MLDSA
++#include "cose/crypto/wolfcrypt_mldsa.h"
++#endif
+ 
+ #include "cose/crypto/selectors.h"
+ 
+@@ -230,6 +233,54 @@ int cose_crypto_verify_ed25519(const cose_key_t *key, const uint8_t *sign, size_
+  */
+ void cose_crypto_keypair_ed25519(cose_key_t *key);
+ void cose_crypto_keypair_ecdsa(cose_key_t *key, cose_curve_t curve);
++
++/**
++ * Verify a byte string and signature with an ML-DSA-44 public key
++ *
++ * Verify-only: SUIT firmware never signs on-device, so no
++ * cose_crypto_sign_mldsa44() is provided.
++ *
++ * @param       key     The Key struct to verify with
++ * @param[out]  sign    The signature
++ * @param       signlen The signature length
++ * @param       msg     The message to verify
++ * @param       msglen  The length of the message
++ *
++ * @return              0 if verification succeeded
++ */
++int cose_crypto_verify_mldsa44(const cose_key_t *key, const uint8_t *sign, size_t signlen, uint8_t *msg, uint64_t msglen);
++
++/**
++ * Verify a byte string and signature with an ML-DSA-65 public key
++ *
++ * Verify-only: SUIT firmware never signs on-device, so no
++ * cose_crypto_sign_mldsa65() is provided.
++ *
++ * @param       key     The Key struct to verify with
++ * @param[out]  sign    The signature
++ * @param       signlen The signature length
++ * @param       msg     The message to verify
++ * @param       msglen  The length of the message
++ *
++ * @return              0 if verification succeeded
++ */
++int cose_crypto_verify_mldsa65(const cose_key_t *key, const uint8_t *sign, size_t signlen, uint8_t *msg, uint64_t msglen);
++
++/**
++ * Verify a byte string and signature with an ML-DSA-87 public key
++ *
++ * Verify-only: SUIT firmware never signs on-device, so no
++ * cose_crypto_sign_mldsa87() is provided.
++ *
++ * @param       key     The Key struct to verify with
++ * @param[out]  sign    The signature
++ * @param       signlen The signature length
++ * @param       msg     The message to verify
++ * @param       msglen  The length of the message
++ *
++ * @return              0 if verification succeeded
++ */
++int cose_crypto_verify_mldsa87(const cose_key_t *key, const uint8_t *sign, size_t signlen, uint8_t *msg, uint64_t msglen);
+ /** @} */
+ 
+ /**
+diff --git a/include/cose/crypto/keysizes.h b/include/cose/crypto/keysizes.h
+index 6a939a8..9c1aa03 100644
+--- a/include/cose/crypto/keysizes.h
++++ b/include/cose/crypto/keysizes.h
+@@ -46,6 +46,51 @@ extern "C" {
+  */
+ #define COSE_CRYPTO_SIGN_ED25519_SIGNBYTES              64U
+ 
++/**
++ * @brief ML-DSA-44 public key size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA44_PUBLICKEYBYTES         1312U
++
++/**
++ * @brief ML-DSA-44 secret key size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA44_SECRETKEYBYTES         2560U
++
++/**
++ * @brief ML-DSA-44 signature size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA44_SIGNBYTES              2420U
++
++/**
++ * @brief ML-DSA-65 public key size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA65_PUBLICKEYBYTES         1952U
++
++/**
++ * @brief ML-DSA-65 secret key size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA65_SECRETKEYBYTES         4032U
++
++/**
++ * @brief ML-DSA-65 signature size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA65_SIGNBYTES              3309U
++
++/**
++ * @brief ML-DSA-87 public key size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA87_PUBLICKEYBYTES         2592U
++
++/**
++ * @brief ML-DSA-87 secret key size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA87_SECRETKEYBYTES         4896U
++
++/**
++ * @brief ML-DSA-87 signature size
++ */
++#define COSE_CRYPTO_SIGN_MLDSA87_SIGNBYTES              4627U
++
+ /**
+  * @brief Curve secp256r1 secret key size
+  */
+diff --git a/include/cose/crypto/wolfcrypt_mldsa.h b/include/cose/crypto/wolfcrypt_mldsa.h
+new file mode 100644
+index 0000000..8144074
+--- /dev/null
++++ b/include/cose/crypto/wolfcrypt_mldsa.h
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) 2026 Freie Universitat Berlin
++ *
++ * This file is subject to the terms and conditions of the GNU Lesser
++ * General Public License v2.1. See the file LICENSE in the top level
++ * directory for more details.
++ */
++
++/**
++ * @defgroup    cose_cryto_wolfcrypt_mldsa Crypto glue layer, wolfCrypt ML-DSA definitions
++ * @ingroup     cose_crypto
++ *
++ * Crypto function api for glueing wolfCrypt's ML-DSA implementation
++ * (parameter sets 44, 65 and 87).
++ * @{
++ *
++ * @file
++ * @brief       Crypto function api for glueing wolfCrypt ML-DSA.
++ */
++
++#ifndef COSE_CRYPTO_WOLFCRYPT_MLDSA_H
++#define COSE_CRYPTO_WOLFCRYPT_MLDSA_H
++
++/* Pulls in the wolfSSL build configuration (user_settings.h under RIOT),
++ * so the WOLFSSL_NO_ML_DSA_* compile-out switches below reflect what the
++ * wolfCrypt build actually contains. */
++#include <wolfssl/wolfcrypt/settings.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * @name list of provided algorithms
++ *
++ * Each ML-DSA parameter set is only advertised to libcose if wolfCrypt was
++ * built with it (wolfSSL compiles a set out via WOLFSSL_NO_ML_DSA_xx).
++ *
++ * @{
++ */
++#ifndef WOLFSSL_NO_ML_DSA_44
++#define HAVE_ALGO_MLDSA44
++#endif
++#ifndef WOLFSSL_NO_ML_DSA_65
++#define HAVE_ALGO_MLDSA65
++#endif
++#ifndef WOLFSSL_NO_ML_DSA_87
++#define HAVE_ALGO_MLDSA87
++#endif
++/** @} */
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* COSE_CRYPTO_WOLFCRYPT_MLDSA_H */
++
++/** @} */
+diff --git a/include/cose_defines.h b/include/cose_defines.h
+index d4953b0..ba88f89 100644
+--- a/include/cose_defines.h
++++ b/include/cose_defines.h
+@@ -154,6 +154,9 @@ typedef enum {
+ typedef enum {
+     COSE_ALGO_NONE  = 0,                /**< Invalid algo */
+     COSE_ALGO_HSSLMS = -46,             /**< HSS-LMS signature algo */
++    COSE_ALGO_MLDSA87 = -50,            /**< ML-DSA-87 (FIPS 204) signature algo */
++    COSE_ALGO_MLDSA65 = -49,            /**< ML-DSA-65 (FIPS 204) signature algo */
++    COSE_ALGO_MLDSA44 = -48,            /**< ML-DSA-44 (FIPS 204) signature algo */
+     COSE_ALGO_ES512 = -36,              /**< ECDSA w/ SHA512 */
+     COSE_ALGO_ES384 = -35,              /**< ECDSA w/ SHA384 */
+     COSE_ALGO_EDDSA = -8,               /**< EdDSA */
+diff --git a/src/cose_crypto.c b/src/cose_crypto.c
+index 4dfd851..df6b477 100644
+--- a/src/cose_crypto.c
++++ b/src/cose_crypto.c
+@@ -230,6 +230,21 @@ int cose_crypto_verify(const cose_key_t *key, const uint8_t *sign, size_t signle
+             /* Needs to be splitted as soon as ed448 support is required */
+             return cose_crypto_verify_ed25519(key, sign, signlen, msg, msglen);
+             break;
++#endif
++#ifdef HAVE_ALGO_MLDSA44
++        case COSE_ALGO_MLDSA44:
++            return cose_crypto_verify_mldsa44(key, sign, signlen, msg, msglen);
++            break;
++#endif
++#ifdef HAVE_ALGO_MLDSA65
++        case COSE_ALGO_MLDSA65:
++            return cose_crypto_verify_mldsa65(key, sign, signlen, msg, msglen);
++            break;
++#endif
++#ifdef HAVE_ALGO_MLDSA87
++        case COSE_ALGO_MLDSA87:
++            return cose_crypto_verify_mldsa87(key, sign, signlen, msg, msglen);
++            break;
+ #endif
+         default:
+             (void)key;
+@@ -256,6 +271,15 @@ size_t cose_crypto_sig_size(const cose_key_t *key)
+             /* Needs to be splitted as soon as ed448 support is required */
+             return COSE_CRYPTO_SIGN_ED25519_SIGNBYTES;
+             break;
++        case COSE_ALGO_MLDSA44:
++            return COSE_CRYPTO_SIGN_MLDSA44_SIGNBYTES;
++            break;
++        case COSE_ALGO_MLDSA65:
++            return COSE_CRYPTO_SIGN_MLDSA65_SIGNBYTES;
++            break;
++        case COSE_ALGO_MLDSA87:
++            return COSE_CRYPTO_SIGN_MLDSA87_SIGNBYTES;
++            break;
+         default:
+             return COSE_ERR_NOTIMPLEMENTED;
+     }
+diff --git a/src/crypt/wolfcrypt_mldsa.c b/src/crypt/wolfcrypt_mldsa.c
+new file mode 100644
+index 0000000..41ffd18
+--- /dev/null
++++ b/src/crypt/wolfcrypt_mldsa.c
+@@ -0,0 +1,91 @@
++/*
++ * Copyright (C) 2026 Freie Universitat Berlin
++ *
++ * This file is subject to the terms and conditions of the GNU Lesser
++ * General Public License v2.1. See the file LICENSE in the top level
++ * directory for more details.
++ */
++
++/**
++ * Glue layer between libcose and wolfCrypt's ML-DSA implementation
++ * (FIPS 204 parameter sets 44, 65 and 87).
++ * Verify-only: SUIT firmware never signs manifests on-device.
++ */
++
++#include <stdint.h>
++#include <stdlib.h>
++
++#include <wolfssl/wolfcrypt/dilithium.h>
++
++#include "cose_defines.h"
++#include "cose/crypto.h"
++#include "cose/crypto/wolfcrypt_mldsa.h"
++
++#if defined(HAVE_ALGO_MLDSA44) || defined(HAVE_ALGO_MLDSA65) || \
++    defined(HAVE_ALGO_MLDSA87)
++
++/* With WOLFSSL_MLDSA_VERIFY_NO_MALLOC, MlDsaKey embeds every verify work
++ * buffer (z/c/w/t1/w1e/h/block, >10KB on ML-DSA-65) - far too large for a
++ * stack frame on a 32KB-RAM target (as a stack local it silently overflowed
++ * the SUIT worker thread stack and corrupted the manifest buffer, making
++ * genuinely valid signatures fail verification). Static is safe: SUIT
++ * verification only ever runs on the single suit_worker thread. Its size
++ * follows the largest ML-DSA parameter set compiled into wolfCrypt. */
++static MlDsaKey _mldsa_key;
++
++static int _verify_mldsa(int category, word32 pubkey_len,
++                         const cose_key_t *key, const uint8_t *sign,
++                         size_t signlen, uint8_t *msg, uint64_t msglen)
++{
++    MlDsaKey *mldsa_key = &_mldsa_key;
++    int verify_result = 0;
++    int ret = wc_MlDsaKey_Init(mldsa_key, NULL, INVALID_DEVID);
++
++    if (ret == 0) {
++        ret = wc_MlDsaKey_SetParams(mldsa_key, category);
++    }
++    if (ret == 0) {
++        ret = wc_MlDsaKey_ImportPubRaw(mldsa_key, key->x, pubkey_len);
++    }
++    if (ret == 0) {
++        /* VerifyCtx with an empty context matches how Python's `cryptography`
++         * library (used by suit-tool sign) signs - plain wc_MlDsaKey_Verify()
++         * is not interoperable with it, confirmed against
++         * dist/tools/suit/ml-dsa-example/wolfcrypt-sample.c. */
++        ret = wc_MlDsaKey_VerifyCtx(mldsa_key, sign, signlen, NULL, 0,
++                                     msg, msglen, &verify_result);
++    }
++    wc_MlDsaKey_Free(mldsa_key);
++    return (ret == 0 && verify_result == 1) ? 0 : -1;
++}
++#endif
++
++#ifdef HAVE_ALGO_MLDSA44
++int cose_crypto_verify_mldsa44(const cose_key_t *key, const uint8_t *sign,
++                                size_t signlen, uint8_t *msg, uint64_t msglen)
++{
++    /* category 2 = ML-DSA-44 */
++    return _verify_mldsa(2, COSE_CRYPTO_SIGN_MLDSA44_PUBLICKEYBYTES,
++                         key, sign, signlen, msg, msglen);
++}
++#endif /* HAVE_ALGO_MLDSA44 */
++
++#ifdef HAVE_ALGO_MLDSA65
++int cose_crypto_verify_mldsa65(const cose_key_t *key, const uint8_t *sign,
++                                size_t signlen, uint8_t *msg, uint64_t msglen)
++{
++    /* category 3 = ML-DSA-65 */
++    return _verify_mldsa(3, COSE_CRYPTO_SIGN_MLDSA65_PUBLICKEYBYTES,
++                         key, sign, signlen, msg, msglen);
++}
++#endif /* HAVE_ALGO_MLDSA65 */
++
++#ifdef HAVE_ALGO_MLDSA87
++int cose_crypto_verify_mldsa87(const cose_key_t *key, const uint8_t *sign,
++                                size_t signlen, uint8_t *msg, uint64_t msglen)
++{
++    /* category 5 = ML-DSA-87 */
++    return _verify_mldsa(5, COSE_CRYPTO_SIGN_MLDSA87_PUBLICKEYBYTES,
++                         key, sign, signlen, msg, msglen);
++}
++#endif /* HAVE_ALGO_MLDSA87 */

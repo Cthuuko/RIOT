@@ -40,23 +40,31 @@ QUIET ?= 1
 USEMODULE += suit suit_transport_coap
 USEMODULE += nanocoap_server_auto_init
 
-# SUIT_KEY_ALGO=ml-dsa-65 selects on-device ML-DSA-65 verification (must be
-# added to USEMODULE before dependency resolution runs in Makefile.include,
-# so this can't live in the later-included makefiles/suit.base.inc.mk).
-ifeq (ml-dsa-65,$(SUIT_KEY_ALGO))
-  USEMODULE += suit_algo_mldsa65
+# SUIT_KEY_ALGO=ml-dsa-44/-65/-87 selects on-device ML-DSA verification for
+# that FIPS 204 parameter set (must be added to USEMODULE before dependency
+# resolution runs in Makefile.include, so this can't live in the
+# later-included makefiles/suit.base.inc.mk).
+ifneq (,$(filter ml-dsa-%,$(SUIT_KEY_ALGO)))
+  USEMODULE += suit_algo_mldsa$(subst ml-dsa-,,$(SUIT_KEY_ALGO))
   # sys/suit/transport/worker.c's manifest fetch buffer defaults to 640B,
-  # sized for an Ed25519 manifest (64B signature). An ML-DSA-65 manifest
-  # embeds a 3309B signature, pushing the whole CBOR envelope to ~3.7KB -
-  # bump the buffer or suit_handle_url() fails with "error getting manifest"
-  # (nanocoap_get_blockwise_url_to_buf()/vfs_file_to_buffer() both reject
-  # anything that doesn't fit). 3840 fits the ~3.75KB envelope while saving
-  # RAM over a rounder 4096 on 32KB-RAM boards.
-  CFLAGS += -DSUIT_MANIFEST_BUFSIZE=3840
+  # sized for an Ed25519 manifest (64B signature). An ML-DSA manifest embeds
+  # a much larger signature (44: 2420B, 65: 3309B, 87: 4627B), pushing the
+  # whole CBOR envelope past the buffer - bump it or suit_handle_url() fails
+  # with "error getting manifest" (nanocoap_get_blockwise_url_to_buf()/
+  # vfs_file_to_buffer() both reject anything that doesn't fit). Sized per
+  # level: signature + ~530B envelope overhead, rounded up, while saving
+  # RAM over rounder values on 32KB-RAM boards.
+  ifeq (ml-dsa-44,$(SUIT_KEY_ALGO))
+    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=3072
+  else ifeq (ml-dsa-87,$(SUIT_KEY_ALGO))
+    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=5376
+  else
+    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=3840
+  endif
   # The ML-DSA verify work state lives in a static MlDsaKey (see
   # pkg/libcose's wolfcrypt_mldsa.c backend), not on the worker stack, so
   # the default 6KB stack suffices for the verify itself; shrink it to 4KB
-  # to fit the ~10KB static key state within the 32KB RAM budget.
+  # to fit the ~10KB (ML-DSA-65) static key state within a 32KB RAM budget.
   CFLAGS += -DSUIT_WORKER_STACKSIZE=4096
 endif
 

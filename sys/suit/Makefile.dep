@@ -2,8 +2,12 @@ USEPKG += nanocbor
 USEPKG += libcose
 USEMODULE += uuid
 
-ifneq (,$(filter suit_algo_mldsa65,$(USEMODULE)))
+ifneq (,$(filter suit_algo_mldsa%,$(USEMODULE)))
   USEMODULE += libcose_crypt_wolfcrypt_mldsa
+  # map each suit_algo_mldsaXX to the wolfcrypt_mldsaXX pseudomodule that
+  # keeps that ML-DSA parameter set compiled into wolfCrypt (see
+  # pkg/wolfssl/include/user_settings.h)
+  USEMODULE += $(patsubst suit_algo_%,wolfcrypt_%,$(filter suit_algo_mldsa%,$(USEMODULE)))
 endif
 
 ifeq (,$(filter libcose_crypt_%,$(USEMODULE)))

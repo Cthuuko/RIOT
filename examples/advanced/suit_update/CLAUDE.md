@@ -108,8 +108,13 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   keys/native_ed25519.pem`, then build with `SUIT_KEY_DIR=<dir>
   SUIT_KEY=native_ed25519 make ...` and sign with `-k keys/native_ed25519.pem`
   so the embedded pubkey matches the signing key.
-- **ML-DSA-65 (post-quantum) manifest signing AND on-device verification are
-  both supported**: `SUIT_KEY_ALGO=ml-dsa-65 make -C
+- **ML-DSA (post-quantum) manifest signing AND on-device verification are
+  both supported, for all three FIPS 204 parameter sets** —
+  `SUIT_KEY_ALGO=ml-dsa-44|ml-dsa-65|ml-dsa-87` each select the matching
+  on-device verifier (see `MLDSA_MULTILEVEL_CHANGES.md` for the multi-level
+  generalization, per-level constants, and native64 test results; the rest
+  of this bullet describes the original ML-DSA-65 bring-up, which all
+  levels share): `SUIT_KEY_ALGO=ml-dsa-65 make -C
   examples/advanced/suit_update BOARD=native64 all` generates/signs with an
   ML-DSA-65 key (`suit/genkey`, `%.pem.pub`, `public_key.h` generation, and
   `suit-tool sign` all handle it like Ed25519 — see
