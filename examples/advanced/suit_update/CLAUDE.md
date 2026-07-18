@@ -32,6 +32,8 @@ board/driver code.
 | `README.md` | Overview + prerequisites |
 | `README.native.md` | Full no-hardware walkthrough (native/Linux target) |
 | `README.hardware.md` | Full real-hardware walkthrough (ethos, border router, flashing) |
+| `NATIVE_SETUP.md` | **E2E reference**: quick recipe for the full SUIT flow on `BOARD=native` (tap setup, key, build, publish, fetch, verify) |
+| `SAMR21_EXAMPLES.md` | **E2E reference**: samr21-xpro walkthroughs for Ed25519 (Example A) and ML-DSA-65 (Example B), incl. shared host/network setup and gotchas |
 | `native_steps.svg` | Diagram referenced by README.native.md |
 | `tests-with-config/` | Automated test configs |
 
@@ -52,6 +54,41 @@ pip3 install --user cbor2 cryptography
 pip3 install --user 'aiocoap[linkheader]>=0.4.1'
 # aiocoap tools install to ~/.local/bin — make sure it's on PATH
 ```
+
+## E2E testing (use the reference docs)
+
+`NATIVE_SETUP.md` and `SAMR21_EXAMPLES.md` are the canonical, tested
+recipes for setting up and exercising the SUIT update workflow end-to-end.
+**When running e2e tests, follow them step by step instead of improvising
+commands**:
+
+- `NATIVE_SETUP.md` — `BOARD=native` (→ `native64` on 64-bit hosts): tap
+  networking, dedicated ed25519 key, build+term, manifest
+  generate/sign/publish, `suit fetch`, verification via `storage_content`.
+- `SAMR21_EXAMPLES.md` — real `samr21-xpro` hardware over ethos:
+  Example A (Ed25519) and Example B (ML-DSA-65), sharing the same one-time
+  host setup (Parts 0–2) and network bridge; only the `SUIT_KEY*`
+  variables differ. Its "Gotchas" section explains the expected
+  `res=-5` on seqnr replay, terminal/flash port contention on
+  `/dev/ttyACM1`, and the misleading `Non-library key type not
+  implemented` signing error.
+
+Rules for Claude when executing these flows:
+
+- **Never run `sudo` commands yourself.** Steps that need root
+  (`tapsetup`, `ip address add`, `setup_network.sh`, `apt-get`,
+  `usbipd` on the Windows side) must be handed to the user: print the
+  exact command and wait for them to run it and confirm before
+  continuing.
+- Long-running foreground processes (`aiocoap-fileserver`, ethos/
+  `setup_network.sh`, `make term`) each need their own shell — run
+  non-sudo ones in the background or ask the user to keep them running in
+  a separate terminal; don't block on them.
+- Always bump the sequence number (`--seqnr` / fresh `APP_VER=$(date +%s)`)
+  for every published manifest — it's a strict monotonic counter.
+- Verify results on the device side (RIOT shell / board terminal output),
+  not by the host command's exit code — `suit/notify` in particular can
+  error or hang on the host even when the update succeeded.
 
 ## Native workflow (no hardware)
 
