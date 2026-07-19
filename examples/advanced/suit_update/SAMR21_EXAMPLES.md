@@ -39,7 +39,9 @@ A/B/C now also embed an auto-generated X25519 device key, and their
 unencrypted publishes keep working via the device-side pass-through
 (`suit_worker: manifest not encrypted, passing through` in the terminal —
 that line is the only visible change). Build with `SUIT_MANIFEST_ENCRYPT=0`
-to reproduce the exact pre-encryption images.
+to reproduce the exact pre-encryption images. **Example E itself is
+verified on real hardware on top of A** (2026-07-19, full encrypted OTA +
+reboot; see its banner and E.9 for what remains open).
 
 ---
 
@@ -460,13 +462,18 @@ surprising either.
 
 # Example E — Encrypted manifests (X25519 + ChaCha20-Poly1305)
 
-> **⚠ UNVERIFIED DRAFT — to be verified on real hardware.** This walkthrough
-> is written from the working `native64` end-to-end flow
-> (`MANIFEST_ENCRYPTION_CHANGES.md`) and has **not** yet been executed on a
-> real samr21-xpro (plan Step 5b in `MANIFEST_ENCRYPTION_PLAN.md`). Commands
-> and expected log lines follow the same conventions as A–D but may need
-> correction during bring-up; update this section (and drop this banner)
-> once a full encrypted update has succeeded on the board.
+> **✅ VERIFIED on real samr21-xpro hardware (2026-07-19), on top of
+> Example A (Ed25519)**: a full encrypted OTA cycle — 577 B encrypted
+> manifest fetched over CoAP/ethos, `manifest decrypted (485 bytes)`,
+> signature verified, firmware downloaded to the other slot,
+> `suit_worker: update successful`, reboot from slot 0 into slot 1 with the
+> new image version. The same session also proved mixed-mode operation in
+> practice: the *previous* update on that firmware was a plain A.7/A.8
+> publish (visible as the predecessor sequence number at E's seqnr check) —
+> pass-through and encrypted updates coexist on one encryption-capable
+> image. Bring-up found one doc correction (E.7's publish path, fixed
+> below). Still hardware-unverified: the tamper-rejection case (E.9 item 3,
+> native64-verified only) and the ML-KEM variants.
 
 Encryption is orthogonal to the signing algorithm: it wraps the *signed*
 manifest in a COSE_Encrypt container (ephemeral-static X25519 → HKDF-SHA256
@@ -557,29 +564,45 @@ using the full published path:
 (61 chars — right under the worker's 64-char URL buffer, which truncates
 silently; that's also why E.7 insists on the short `riot.suit.enc` name.)
 
-## E.9 — What "verified" looks like
+## E.9 — Verification status
 
-Watch the board's terminal; the expected sequence (observed on native64):
+Observed on real hardware (2026-07-19, E on top of A; abridged from the
+actual board terminal):
 
 ```
-suit_worker: got manifest with size <N+92>
-suit_worker: manifest decrypted (<N> bytes)
+suit_worker: downloading "coap://[2001:db8::1]/fw/suit_update/samr21-xpro/riot.suit.enc"
+suit_worker: got manifest with size 577
+suit_worker: manifest decrypted (485 bytes)
 suit: verifying manifest signature
-...
+suit: validated manifest version
+Manifest seq_no: 1784474810, highest available: 1784474752
+...vendor ID: OK ... class id: OK ... SUIT policy check OK.
+riotboot_flashwrite: initializing update to target slot 1
+Fetching firmware |█████████████████████████| 100%
+Verified installed payload
 suit_worker: update successful
+suit_worker: rebooting...
+...
+Running from slot 1
 ```
 
-followed by the reboot into the new slot. Bring-up checklist to promote
-this section to "verified":
+(The repeated `suit: received URL` lines mid-download are harmless
+`suit/notify` retransmissions from the host — the running worker ignores
+them.)
 
-1. Encrypted update end-to-end (decrypt → verify → download → reboot).
-2. Plaintext publish still accepted (pass-through line, A.7/A.8 unchanged).
-3. Tampered container rejected: flip one byte in `riot.suit.enc`, re-notify
-   with it, expect `suit_worker: manifest decryption failed. res=-213`
-   (bump nothing — a rejected manifest doesn't consume the seqnr).
-4. Repeat update cycle twice more (RAM stability, as in the ML-DSA
-   bring-up), then record the `text/data/bss` numbers here and in
-   `MANIFEST_ENCRYPTION_CHANGES.md`.
+Bring-up checklist status:
+
+1. ✅ Encrypted update end-to-end (decrypt → verify → download → reboot
+   into the other slot) — the log above.
+2. ✅ Plaintext publish accepted by the same encryption-capable firmware —
+   the predecessor seqnr (1784474752) in the log *is* the earlier plain
+   A.7/A.8 update on this image (mixed-mode proven in one session).
+3. ⬜ Tampered container rejected on hardware (`res=-213` expected;
+   verified on native64 only so far): flip one byte in `riot.suit.enc`,
+   re-notify — a rejected manifest doesn't consume the seqnr.
+4. ⬜ Two more update cycles in a row for RAM-stability confidence (the
+   build's static numbers are already recorded in the feasibility table
+   above: 102,492 text / 21,160 RAM with 11.6 KB spare).
 
 Failure modes to expect on this board (from the feasibility notes): a
 `.bss`/`ram` overflow at link time on top of ML-DSA-65 (like Example D's

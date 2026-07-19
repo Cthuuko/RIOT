@@ -1,51 +1,136 @@
+diff --git a/examples/advanced/suit_update/CLAUDE.md b/examples/advanced/suit_update/CLAUDE.md
+index 5b806810c825a06a74d2e75c79de19b43366628a..0be04a6157a28af26ac4c25fe4dfe3dd1b269722 100644
+--- a/examples/advanced/suit_update/CLAUDE.md
++++ b/examples/advanced/suit_update/CLAUDE.md
+@@ -212,8 +212,11 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
+   in place in `sys/suit/encrypt/decrypt.c` before `suit_parse()`;
+   sign-then-encrypt on the host (`manifest-encryption/encrypt_manifest.py
+   --key $(SUIT_KEY_DIR)/device_x25519.pem`), decrypt-then-verify on-device.
+-  Plaintext manifests still pass through. Verified E2E on native64;
+-  samr21-xpro pending (plan Step 5b). Key gotchas: on-device X25519 uses the
++  Plaintext manifests still pass through. Verified E2E on native64 **and
++  on real samr21-xpro hardware** (2026-07-19, Ed25519+X25519: full
++  encrypted OTA + reboot, mixed with plain pass-through updates —
++  SAMR21_EXAMPLES.md Example E; watch the 64-char URL budget: the notify
++  path is 61 chars with the mandatory short `riot.suit.enc` name). Key gotchas: on-device X25519 uses the
+   **c25519 pkg**, never `wolfcrypt_curve25519` (symbol collision
+   `fprime_*` with libcose's c25519 backend); HKDF `info`/AAD CBOR must be
+   byte-exact across sides; the standalone host sample needs
+diff --git a/examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md b/examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md
+index ecccf25d3710360f97a27706ffe6a59e462fabb5..7cfe40d24076e27b52cbba206b8747d1e6ccc4f5 100644
+--- a/examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md
++++ b/examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md
+@@ -11,7 +11,7 @@ Living plan document — future sessions resume from the first unchecked step.
+ - [x] Step 3: host tooling — key gen/header embedding landed with Step 2 (`SUIT_ENC_SEC`, `suit/genenckey`); manifest encryption itself stays a manual `encrypt_manifest.py --key ... -o ...` call after `suit-tool sign` for now (a `suit/publish`-integrated encrypt step can follow if wanted)
+ - [x] Step 4: buffer sizing — app Makefile adds +128 B to `SUIT_MANIFEST_BUFSIZE` for all key algos when encryption is on (ed25519: 768, ml-dsa-44: 3200, -65: 3968, -87: 5504)
+ - [x] Step 5a: E2E on native64 (2026-07-19) — Ed25519+encryption: full update success (decrypt → verify → install, `storage_content` shows payload); ML-DSA-44+encryption: builds and links cleanly (c25519 + wolfcrypt coexist), decrypts and passes signature verification — accepted per test criterion (decrypt path works, pass-through works); a downstream condition failure (`res=-4` plain / `res=-1` encrypted, after successful signature verify) exists identically in the plain path on that binary, i.e. unrelated to encryption. Note: native VFS fetches use `file:///nvm0/<file>` (host dir `native/` next to the elf's CWD); the worker URL buffer is 64 chars.
+-- [ ] Step 5b: E2E on samr21-xpro (see feasibility section; recommended pairing Ed25519+encryption first)
++- [x] Step 5b: E2E on samr21-xpro (2026-07-19) — **verified on real hardware** with Ed25519+X25519 encryption: full encrypted OTA over CoAP/ethos (577 B container → 485 B manifest → verify → flash slot 1 → reboot), mixed with a prior plain update on the same image (pass-through proven). Bring-up fix: E.7's publish path (`coaproot/fw/<app>/<board>/`, name must stay `riot.suit.enc` — notify URL is 61/64 chars). See `SAMR21_EXAMPLES.md` Example E (banner + E.9 status; tamper-on-hardware and repeat-cycles remain open there).
+ - [x] Step 6 (partial, 2026-07-19): `MANIFEST_ENCRYPTION_CHANGES.md` written (changes, opt-out contract, verification, gotchas); `NATIVE_SETUP.md` extended with the encrypted flow (step 6b encrypt-after-sign, step 9 opt-out, pass-through/tamper log lines, `/nvm0` vfs tip); `CLAUDE.md` updated (file tables, E2E reference, gotchas bullet). `SAMR21_EXAMPLES.md` now carries Example E, a draft encrypted-manifest walkthrough explicitly banner-marked **UNVERIFIED** with an E.9 bring-up checklist — Step 5b executes that checklist, then drops the banner and records the measured sizes.
+ 
+ ## Context
 diff --git a/examples/advanced/suit_update/SAMR21_EXAMPLES.md b/examples/advanced/suit_update/SAMR21_EXAMPLES.md
-index cc949f2d6482409103c731970c340f29862df9a5..a9ebd3bdd6ee51a779d398d688a09095867e1cc3 100644
+index a9ebd3bdd6ee51a779d398d688a09095867e1cc3..2858002bd12ff7f9ccacb63c8b10cdb6dd959a05 100644
 --- a/examples/advanced/suit_update/SAMR21_EXAMPLES.md
 +++ b/examples/advanced/suit_update/SAMR21_EXAMPLES.md
-@@ -515,15 +515,24 @@ Reflashing after the device key already exists reuses it.
+@@ -39,7 +39,9 @@ A/B/C now also embed an auto-generated X25519 device key, and their
+ unencrypted publishes keep working via the device-side pass-through
+ (`suit_worker: manifest not encrypted, passing through` in the terminal —
+ that line is the only visible change). Build with `SUIT_MANIFEST_ENCRYPT=0`
+-to reproduce the exact pre-encryption images.
++to reproduce the exact pre-encryption images. **Example E itself is
++verified on real hardware on top of A** (2026-07-19, full encrypted OTA +
++reboot; see its banner and E.9 for what remains open).
  
- Publish exactly as in A.7/B.7/C.7 (same variables, fresh
- `APP_VER=$(date +%s)`), then encrypt the published manifest **for this
--board's device key** (published manifests land in `coaproot/` as
--`riot.suit.$APP_VER.bin` / `riot.suit.latest.bin`):
-+board's device key**. Publishing does not drop files at the `coaproot/`
-+root — `suit/publish` copies into
-+`$(SUIT_COAP_FSROOT)/$(SUIT_COAP_BASEPATH)` =
-+`coaproot/fw/suit_update/samr21-xpro/` (as the `published ... as coap://...`
-+lines in its output show), so encrypt in place there:
+ ---
  
- ```sh
- python3 examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py \
-   --key $SUIT_KEY_DIR/device_x25519.pem \
--  -o coaproot/riot.suit.enc coaproot/riot.suit.latest.bin
-+  -o coaproot/fw/suit_update/samr21-xpro/riot.suit.enc \
-+  coaproot/fw/suit_update/samr21-xpro/riot.suit.latest.bin
+@@ -460,13 +462,18 @@ surprising either.
+ 
+ # Example E — Encrypted manifests (X25519 + ChaCha20-Poly1305)
+ 
+-> **⚠ UNVERIFIED DRAFT — to be verified on real hardware.** This walkthrough
+-> is written from the working `native64` end-to-end flow
+-> (`MANIFEST_ENCRYPTION_CHANGES.md`) and has **not** yet been executed on a
+-> real samr21-xpro (plan Step 5b in `MANIFEST_ENCRYPTION_PLAN.md`). Commands
+-> and expected log lines follow the same conventions as A–D but may need
+-> correction during bring-up; update this section (and drop this banner)
+-> once a full encrypted update has succeeded on the board.
++> **✅ VERIFIED on real samr21-xpro hardware (2026-07-19), on top of
++> Example A (Ed25519)**: a full encrypted OTA cycle — 577 B encrypted
++> manifest fetched over CoAP/ethos, `manifest decrypted (485 bytes)`,
++> signature verified, firmware downloaded to the other slot,
++> `suit_worker: update successful`, reboot from slot 0 into slot 1 with the
++> new image version. The same session also proved mixed-mode operation in
++> practice: the *previous* update on that firmware was a plain A.7/A.8
++> publish (visible as the predecessor sequence number at E's seqnr check) —
++> pass-through and encrypted updates coexist on one encryption-capable
++> image. Bring-up found one doc correction (E.7's publish path, fixed
++> below). Still hardware-unverified: the tamper-rejection case (E.9 item 3,
++> native64-verified only) and the ML-KEM variants.
+ 
+ Encryption is orthogonal to the signing algorithm: it wraps the *signed*
+ manifest in a COSE_Encrypt container (ephemeral-static X25519 → HKDF-SHA256
+@@ -557,29 +564,45 @@ using the full published path:
+ (61 chars — right under the worker's 64-char URL buffer, which truncates
+ silently; that's also why E.7 insists on the short `riot.suit.enc` name.)
+ 
+-## E.9 — What "verified" looks like
++## E.9 — Verification status
+ 
+-Watch the board's terminal; the expected sequence (observed on native64):
++Observed on real hardware (2026-07-19, E on top of A; abridged from the
++actual board terminal):
+ 
  ```
- 
-+Keep the output name exactly `riot.suit.enc`: the notify URL becomes
-+`coap://[2001:db8::1]/fw/suit_update/samr21-xpro/riot.suit.enc` — 61 of
-+the device's 64 URL-buffer chars. A versioned name
-+(`riot.suit.<epoch>.enc`) would silently truncate.
+-suit_worker: got manifest with size <N+92>
+-suit_worker: manifest decrypted (<N> bytes)
++suit_worker: downloading "coap://[2001:db8::1]/fw/suit_update/samr21-xpro/riot.suit.enc"
++suit_worker: got manifest with size 577
++suit_worker: manifest decrypted (485 bytes)
+ suit: verifying manifest signature
+-...
++suit: validated manifest version
++Manifest seq_no: 1784474810, highest available: 1784474752
++...vendor ID: OK ... class id: OK ... SUIT policy check OK.
++riotboot_flashwrite: initializing update to target slot 1
++Fetching firmware |█████████████████████████| 100%
++Verified installed payload
+ suit_worker: update successful
+-```
+-
+-followed by the reboot into the new slot. Bring-up checklist to promote
+-this section to "verified":
+-
+-1. Encrypted update end-to-end (decrypt → verify → download → reboot).
+-2. Plaintext publish still accepted (pass-through line, A.7/A.8 unchanged).
+-3. Tampered container rejected: flip one byte in `riot.suit.enc`, re-notify
+-   with it, expect `suit_worker: manifest decryption failed. res=-213`
+-   (bump nothing — a rejected manifest doesn't consume the seqnr).
+-4. Repeat update cycle twice more (RAM stability, as in the ML-DSA
+-   bring-up), then record the `text/data/bss` numbers here and in
+-   `MANIFEST_ENCRYPTION_CHANGES.md`.
++suit_worker: rebooting...
++...
++Running from slot 1
++```
 +
- Expect `Self-test decrypt: OK` and a ~92-byte overhead report. (The tool
- also drops `encrypted.h`/`plaintext.h`/`device_*.h` helper headers in the
- current directory — standalone-example artifacts, safe to delete.)
-@@ -538,13 +547,15 @@ SUIT_NOTIFY_MANIFEST=riot.suit.enc \
-   BOARD=samr21-xpro make -C examples/advanced/suit_update suit/notify
- ```
++(The repeated `suit: received URL` lines mid-download are harmless
++`suit/notify` retransmissions from the host — the running worker ignores
++them.)
++
++Bring-up checklist status:
++
++1. ✅ Encrypted update end-to-end (decrypt → verify → download → reboot
++   into the other slot) — the log above.
++2. ✅ Plaintext publish accepted by the same encryption-capable firmware —
++   the predecessor seqnr (1784474752) in the log *is* the earlier plain
++   A.7/A.8 update on this image (mixed-mode proven in one session).
++3. ⬜ Tampered container rejected on hardware (`res=-213` expected;
++   verified on native64 only so far): flip one byte in `riot.suit.enc`,
++   re-notify — a rejected manifest doesn't consume the seqnr.
++4. ⬜ Two more update cycles in a row for RAM-stability confidence (the
++   build's static numbers are already recorded in the feasibility table
++   above: 102,492 text / 21,160 RAM with 11.6 KB spare).
  
--Alternatively, trigger directly from the board's shell (E.6 terminal):
-+Alternatively, trigger directly from the board's shell (E.6 terminal),
-+using the full published path:
- 
- ```
--> suit fetch coap://[2001:db8::1]/riot.suit.enc
-+> suit fetch coap://[2001:db8::1]/fw/suit_update/samr21-xpro/riot.suit.enc
- ```
- 
--(Keep the URL under 64 chars — the worker's URL buffer truncates silently.)
-+(61 chars — right under the worker's 64-char URL buffer, which truncates
-+silently; that's also why E.7 insists on the short `riot.suit.enc` name.)
- 
- ## E.9 — What "verified" looks like
- 
+ Failure modes to expect on this board (from the feasibility notes): a
+ `.bss`/`ram` overflow at link time on top of ML-DSA-65 (like Example D's

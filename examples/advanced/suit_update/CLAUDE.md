@@ -212,8 +212,11 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   in place in `sys/suit/encrypt/decrypt.c` before `suit_parse()`;
   sign-then-encrypt on the host (`manifest-encryption/encrypt_manifest.py
   --key $(SUIT_KEY_DIR)/device_x25519.pem`), decrypt-then-verify on-device.
-  Plaintext manifests still pass through. Verified E2E on native64;
-  samr21-xpro pending (plan Step 5b). Key gotchas: on-device X25519 uses the
+  Plaintext manifests still pass through. Verified E2E on native64 **and
+  on real samr21-xpro hardware** (2026-07-19, Ed25519+X25519: full
+  encrypted OTA + reboot, mixed with plain pass-through updates —
+  SAMR21_EXAMPLES.md Example E; watch the 64-char URL budget: the notify
+  path is 61 chars with the mandatory short `riot.suit.enc` name). Key gotchas: on-device X25519 uses the
   **c25519 pkg**, never `wolfcrypt_curve25519` (symbol collision
   `fprime_*` with libcose's c25519 backend); HKDF `info`/AAD CBOR must be
   byte-exact across sides; the standalone host sample needs
