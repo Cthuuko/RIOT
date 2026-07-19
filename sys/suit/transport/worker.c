@@ -56,6 +56,10 @@
 #include "suit/storage.h"
 #endif
 
+#ifdef MODULE_SUIT_MANIFEST_ENCRYPT
+#include "suit/manifest_encrypt.h"
+#endif
+
 #if defined(MODULE_PROGRESS_BAR)
 #include "progress_bar.h"
 #endif
@@ -123,6 +127,30 @@ int suit_handle_url(const char *url)
 
 int suit_handle_manifest_buf(const uint8_t *buffer, size_t size)
 {
+#ifdef MODULE_SUIT_MANIFEST_ENCRYPT
+    /* A COSE_Encrypt-wrapped manifest is decrypted in place before parsing.
+     * All in-tree callers pass the writable static _manifest_buf, which
+     * makes the const cast safe; plaintext manifests pass through so
+     * legacy unencrypted updates keep working. */
+    const uint8_t *plaintext;
+    size_t plaintext_len;
+    int dres = suit_manifest_decrypt((uint8_t *)buffer, size,
+                                     &plaintext, &plaintext_len);
+    if (dres < 0) {
+        LOG_INFO("suit_worker: manifest decryption failed. res=%i\n", dres);
+        return dres;
+    }
+    if (dres == 0) {
+        LOG_INFO("suit_worker: manifest decrypted (%" PRIuSIZE " bytes)\n",
+                 plaintext_len);
+    }
+    else {
+        LOG_INFO("suit_worker: manifest not encrypted, passing through\n");
+    }
+    buffer = plaintext;
+    size = plaintext_len;
+#endif
+
     suit_manifest_t manifest;
     memset(&manifest, 0, sizeof(manifest));
 

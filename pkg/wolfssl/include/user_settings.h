@@ -182,6 +182,10 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
 
 #ifndef MODULE_WOLFCRYPT_HMAC
 #define NO_HMAC
+#else
+/* HKDF (RFC 5869) builds on HMAC; its code lives in kdf.c, which is always
+ * compiled (see Makefile.wolfcrypt), so gating it here costs nothing */
+#define HAVE_HKDF
 #endif
 
 #undef NO_SHA

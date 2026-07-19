@@ -8,6 +8,11 @@ signing algorithm baked into the firmware and used to sign updates:
 - **Example C — ML-DSA-44** (post-quantum, FIPS 204, category 2)
 - **Example D — ML-DSA-87** (post-quantum, FIPS 204, category 5)
 
+plus one orthogonal add-on that layers on top of any of them:
+
+- **Example E — Encrypted manifests** (X25519 + ChaCha20-Poly1305
+  confidentiality; **unverified draft**, see its own status note)
+
 Run each command as its own line in the WSL shell, from the repo root
 (`~/masterthesis/RIOT` or wherever this checkout lives). All four examples
 share the same one-time setup (Parts 0–2); only key generation, flashing,
@@ -28,6 +33,13 @@ bigger than ML-DSA-65's and are expected **not** to fit — B's RAM budget on
 this board already left only ~216B spare with the smaller ML-DSA-65 key.
 Treat Example D as a "does it even build and flash" experiment, not a
 proven flow.
+
+**Since manifest encryption landed (default-on, see Example E)**: builds of
+A/B/C now also embed an auto-generated X25519 device key, and their
+unencrypted publishes keep working via the device-side pass-through
+(`suit_worker: manifest not encrypted, passing through` in the terminal —
+that line is the only visible change). Build with `SUIT_MANIFEST_ENCRYPT=0`
+to reproduce the exact pre-encryption images.
 
 ---
 
@@ -440,6 +452,117 @@ terminal for manifest fetch, signature verification, and reboot; even past
 the link error, the bigger manifest buffer and in-flight signature leave
 less remaining RAM headroom than B/C, so a crash or hang here wouldn't be
 surprising either.
+
+---
+
+# Example E — Encrypted manifests (X25519 + ChaCha20-Poly1305)
+
+> **⚠ UNVERIFIED DRAFT — to be verified on real hardware.** This walkthrough
+> is written from the working `native64` end-to-end flow
+> (`MANIFEST_ENCRYPTION_CHANGES.md`) and has **not** yet been executed on a
+> real samr21-xpro (plan Step 5b in `MANIFEST_ENCRYPTION_PLAN.md`). Commands
+> and expected log lines follow the same conventions as A–D but may need
+> correction during bring-up; update this section (and drop this banner)
+> once a full encrypted update has succeeded on the board.
+
+Encryption is orthogonal to the signing algorithm: it wraps the *signed*
+manifest in a COSE_Encrypt container (ephemeral-static X25519 → HKDF-SHA256
+→ ChaCha20-Poly1305, ~92B overhead) that the device decrypts in place
+before parsing. It is **on by default** in this app's build
+(`SUIT_MANIFEST_ENCRYPT=1`), so A/B/C flashes are already
+encryption-capable — Example E only changes what gets *published*.
+
+**Expected RAM feasibility** (from `MANIFEST_ENCRYPTION_PLAN.md`; the
+decrypt code adds ChaCha20-Poly1305 + HKDF flash but reuses the c25519
+curve code already linked for Ed25519, and the manifest buffer grows 128B):
+
+| Base example | Expectation on samr21-xpro |
+|---|---|
+| E on top of A (Ed25519) | **recommended first target** — ample headroom |
+| E on top of C (ML-DSA-44) | plausible — C had headroom to spare |
+| E on top of B (ML-DSA-65) | at risk — B had only ~216B RAM slack; +128B buffer leaves ≲90B, expect possible `.bss` overflow at link |
+| E on top of D (ML-DSA-87) | out of the question — D already fails to link |
+
+## E.0 — Prerequisite
+
+Complete a working base example first (A recommended) up to and including
+its flash step — the flash **must** be from a build with encryption on
+(the default), which also auto-generates the device key
+`$SUIT_KEY_DIR/device_x25519.pem` and bakes its private half into the
+firmware. Keep the A.4-style exports set; E reuses them. (To pre-generate
+the key without building: `suit/genenckey` with the same variables.)
+
+## E.5 — Flash (only if the board isn't already running an encryption-capable build)
+
+Identical to A.5/B.5/C.5 — no extra variables needed; `make` prints
+`suit: generating manifest-encryption key in ...` on the first build.
+Reflashing after the device key already exists reuses it.
+
+## E.7 — Publish a signed update, then encrypt the manifest
+
+Publish exactly as in A.7/B.7/C.7 (same variables, fresh
+`APP_VER=$(date +%s)`), then encrypt the published manifest **for this
+board's device key** (published manifests land in `coaproot/` as
+`riot.suit.$APP_VER.bin` / `riot.suit.latest.bin`):
+
+```sh
+python3 examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py \
+  --key $SUIT_KEY_DIR/device_x25519.pem \
+  -o coaproot/riot.suit.enc coaproot/riot.suit.latest.bin
+```
+
+Expect `Self-test decrypt: OK` and a ~92-byte overhead report. (The tool
+also drops `encrypted.h`/`plaintext.h`/`device_*.h` helper headers in the
+current directory — standalone-example artifacts, safe to delete.)
+
+## E.8 — Notify the device with the encrypted manifest
+
+Point the notify at the encrypted file instead of the default name:
+
+```sh
+SUIT_NOTIFY_MANIFEST=riot.suit.enc \
+  SUIT_COAP_SERVER=[2001:db8::1] SUIT_CLIENT=[fe80::2%riot0] \
+  BOARD=samr21-xpro make -C examples/advanced/suit_update suit/notify
+```
+
+Alternatively, trigger directly from the board's shell (E.6 terminal):
+
+```
+> suit fetch coap://[2001:db8::1]/riot.suit.enc
+```
+
+(Keep the URL under 64 chars — the worker's URL buffer truncates silently.)
+
+## E.9 — What "verified" looks like
+
+Watch the board's terminal; the expected sequence (observed on native64):
+
+```
+suit_worker: got manifest with size <N+92>
+suit_worker: manifest decrypted (<N> bytes)
+suit: verifying manifest signature
+...
+suit_worker: update successful
+```
+
+followed by the reboot into the new slot. Bring-up checklist to promote
+this section to "verified":
+
+1. Encrypted update end-to-end (decrypt → verify → download → reboot).
+2. Plaintext publish still accepted (pass-through line, A.7/A.8 unchanged).
+3. Tampered container rejected: flip one byte in `riot.suit.enc`, re-notify
+   with it, expect `suit_worker: manifest decryption failed. res=-213`
+   (bump nothing — a rejected manifest doesn't consume the seqnr).
+4. Repeat update cycle twice more (RAM stability, as in the ML-DSA
+   bring-up), then record the `text/data/bss` numbers here and in
+   `MANIFEST_ENCRYPTION_CHANGES.md`.
+
+Failure modes to expect on this board (from the feasibility notes): a
+`.bss`/`ram` overflow at link time on top of ML-DSA-65 (like Example D's
+error, smaller), or a worker-stack shortfall during decrypt — re-measure
+with `ps` stack watermarks, and remember the M0+ lesson from
+`MLDSA_HARDWARE_FIXES.md`: big structs go `static`, never on the 4KB worker
+stack.
 
 ---
 

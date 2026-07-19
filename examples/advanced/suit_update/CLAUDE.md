@@ -32,8 +32,11 @@ board/driver code.
 | `README.md` | Overview + prerequisites |
 | `README.native.md` | Full no-hardware walkthrough (native/Linux target) |
 | `README.hardware.md` | Full real-hardware walkthrough (ethos, border router, flashing) |
-| `NATIVE_SETUP.md` | **E2E reference**: quick recipe for the full SUIT flow on `BOARD=native` (tap setup, key, build, publish, fetch, verify) |
-| `SAMR21_EXAMPLES.md` | **E2E reference**: samr21-xpro walkthroughs for Ed25519 (Example A) and ML-DSA-65 (Example B), incl. shared host/network setup and gotchas |
+| `NATIVE_SETUP.md` | **E2E reference**: quick recipe for the full SUIT flow on `BOARD=native` (tap setup, key, build, publish, fetch, verify), incl. the default-on encrypted-manifest flow and its opt-out |
+| `SAMR21_EXAMPLES.md` | **E2E reference**: samr21-xpro walkthroughs for Ed25519 (A), ML-DSA-65/-44/-87 (B/C/D), and encrypted manifests (E — **unverified draft** with a bring-up checklist, do not treat as tested), incl. shared host/network setup and gotchas |
+| `MANIFEST_ENCRYPTION_PLAN.md` | Manifest-encryption feature plan + status checklist — resume work from the first unchecked step |
+| `MANIFEST_ENCRYPTION_CHANGES.md` | Manifest-encryption code-change summary: wire format, opt-out contract, per-file change list, verification results, gotchas |
+| `manifest-encryption/` | Standalone host-only interop example (Python `cryptography` encrypt ↔ wolfCrypt decrypt); its `encrypt_manifest.py` doubles as the host-side manifest encryption tool |
 | `native_steps.svg` | Diagram referenced by README.native.md |
 | `tests-with-config/` | Automated test configs |
 
@@ -64,7 +67,10 @@ commands**:
 
 - `NATIVE_SETUP.md` — `BOARD=native` (→ `native64` on 64-bit hosts): tap
   networking, dedicated ed25519 key, build+term, manifest
-  generate/sign/publish, `suit fetch`, verification via `storage_content`.
+  generate/sign/publish, `suit fetch`, verification via `storage_content`;
+  covers both the default encrypted-manifest flow (step 6b: encrypt after
+  sign; expect `manifest decrypted (N bytes)` on-device) and the
+  `SUIT_MANIFEST_ENCRYPT=0` opt-out (step 9).
 - `SAMR21_EXAMPLES.md` — real `samr21-xpro` hardware over ethos:
   Example A (Ed25519) and Example B (ML-DSA-65), sharing the same one-time
   host setup (Parts 0–2) and network bridge; only the `SUIT_KEY*`
@@ -195,6 +201,22 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
     constrained boards (default `samr21-xpro`, 32KB RAM) is unverified —
     `WOLFSSL_MLDSA_VERIFY_ONLY`/`_SMALL_MEM`/`_NO_MALLOC` are enabled to
     minimize footprint, but this hasn't been tested on real hardware.
+- **Manifest encryption (confidentiality) is on by default** —
+  `SUIT_MANIFEST_ENCRYPT=0` opts out (module, crypto, and embedded device
+  key then absent entirely). Design: ephemeral-static X25519 (ECDH-ES +
+  HKDF-256) + ChaCha20-Poly1305 in an RFC 9770-style COSE_Encrypt, decrypted
+  in place in `sys/suit/encrypt/decrypt.c` before `suit_parse()`;
+  sign-then-encrypt on the host (`manifest-encryption/encrypt_manifest.py
+  --key $(SUIT_KEY_DIR)/device_x25519.pem`), decrypt-then-verify on-device.
+  Plaintext manifests still pass through. Verified E2E on native64;
+  samr21-xpro pending (plan Step 5b). Key gotchas: on-device X25519 uses the
+  **c25519 pkg**, never `wolfcrypt_curve25519` (symbol collision
+  `fprime_*` with libcose's c25519 backend); HKDF `info`/AAD CBOR must be
+  byte-exact across sides; the standalone host sample needs
+  `wc_curve25519_set_rng()` (blinding default). See
+  `MANIFEST_ENCRYPTION_CHANGES.md` (changes/gotchas),
+  `MANIFEST_ENCRYPTION_PLAN.md` (status), `manifest-encryption/README.md`
+  (wire format), `NATIVE_SETUP.md` steps 6b/9 (workflow).
 - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
 - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —

@@ -1,0 +1,1107 @@
+diff --git a/dist/tools/suit/enckey_to_header.py b/dist/tools/suit/enckey_to_header.py
+new file mode 100755
+index 0000000000..ff5dce2c2d
+--- /dev/null
++++ b/dist/tools/suit/enckey_to_header.py
+@@ -0,0 +1,43 @@
++#!/usr/bin/env python3
++
++#
++# Copyright (C) 2026 Miguel Arcilla
++#
++# This file is subject to the terms and conditions of the GNU Lesser
++# General Public License v2.1. See the file LICENSE in the top level
++# directory for more details.
++#
++
++"""Emit a C header defining `suit_enc_seckey[32]` from an X25519 private key
++PEM file: the device's static key for SUIT manifest decryption (COSE
++ECDH-ES + HKDF-256). Raw bytes are RFC 7748 little-endian, matching the
++EC25519_LITTLE_ENDIAN imports in sys/suit/encrypt/decrypt.c.
++
++SECURITY: the private key ends up in the firmware image; prototype-grade
++key storage only."""
++
++import sys
++
++from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
++from cryptography.hazmat.primitives.serialization import load_pem_private_key
++
++
++def main():
++    if len(sys.argv) != 2:
++        print("usage: enckey_to_header.py <x25519_private_key.pem>")
++        sys.exit(1)
++
++    with open(sys.argv[1], 'rb') as f:
++        seckey = load_pem_private_key(f.read(), None)
++
++    if not isinstance(seckey, X25519PrivateKey):
++        sys.exit("suit: SUIT_ENC_SEC must be an X25519 private key")
++
++    raw = seckey.private_bytes_raw()
++    print(f"const uint8_t suit_enc_seckey[{len(raw)}] = {{")
++    print(", ".join(f"0x{b:02x}" for b in raw))
++    print("};")
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/examples/advanced/suit_update/CLAUDE.md b/examples/advanced/suit_update/CLAUDE.md
+index ae8d922132..7a30f9a973 100644
+--- a/examples/advanced/suit_update/CLAUDE.md
++++ b/examples/advanced/suit_update/CLAUDE.md
+@@ -32,8 +32,11 @@ board/driver code.
+ | `README.md` | Overview + prerequisites |
+ | `README.native.md` | Full no-hardware walkthrough (native/Linux target) |
+ | `README.hardware.md` | Full real-hardware walkthrough (ethos, border router, flashing) |
+-| `NATIVE_SETUP.md` | **E2E reference**: quick recipe for the full SUIT flow on `BOARD=native` (tap setup, key, build, publish, fetch, verify) |
+-| `SAMR21_EXAMPLES.md` | **E2E reference**: samr21-xpro walkthroughs for Ed25519 (Example A) and ML-DSA-65 (Example B), incl. shared host/network setup and gotchas |
++| `NATIVE_SETUP.md` | **E2E reference**: quick recipe for the full SUIT flow on `BOARD=native` (tap setup, key, build, publish, fetch, verify), incl. the default-on encrypted-manifest flow and its opt-out |
++| `SAMR21_EXAMPLES.md` | **E2E reference**: samr21-xpro walkthroughs for Ed25519 (A), ML-DSA-65/-44/-87 (B/C/D), and encrypted manifests (E — **unverified draft** with a bring-up checklist, do not treat as tested), incl. shared host/network setup and gotchas |
++| `MANIFEST_ENCRYPTION_PLAN.md` | Manifest-encryption feature plan + status checklist — resume work from the first unchecked step |
++| `MANIFEST_ENCRYPTION_CHANGES.md` | Manifest-encryption code-change summary: wire format, opt-out contract, per-file change list, verification results, gotchas |
++| `manifest-encryption/` | Standalone host-only interop example (Python `cryptography` encrypt ↔ wolfCrypt decrypt); its `encrypt_manifest.py` doubles as the host-side manifest encryption tool |
+ | `native_steps.svg` | Diagram referenced by README.native.md |
+ | `tests-with-config/` | Automated test configs |
+ 
+@@ -64,7 +67,10 @@ commands**:
+ 
+ - `NATIVE_SETUP.md` — `BOARD=native` (→ `native64` on 64-bit hosts): tap
+   networking, dedicated ed25519 key, build+term, manifest
+-  generate/sign/publish, `suit fetch`, verification via `storage_content`.
++  generate/sign/publish, `suit fetch`, verification via `storage_content`;
++  covers both the default encrypted-manifest flow (step 6b: encrypt after
++  sign; expect `manifest decrypted (N bytes)` on-device) and the
++  `SUIT_MANIFEST_ENCRYPT=0` opt-out (step 9).
+ - `SAMR21_EXAMPLES.md` — real `samr21-xpro` hardware over ethos:
+   Example A (Ed25519) and Example B (ML-DSA-65), sharing the same one-time
+   host setup (Parts 0–2) and network bridge; only the `SUIT_KEY*`
+@@ -195,6 +201,22 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
+     constrained boards (default `samr21-xpro`, 32KB RAM) is unverified —
+     `WOLFSSL_MLDSA_VERIFY_ONLY`/`_SMALL_MEM`/`_NO_MALLOC` are enabled to
+     minimize footprint, but this hasn't been tested on real hardware.
++- **Manifest encryption (confidentiality) is on by default** —
++  `SUIT_MANIFEST_ENCRYPT=0` opts out (module, crypto, and embedded device
++  key then absent entirely). Design: ephemeral-static X25519 (ECDH-ES +
++  HKDF-256) + ChaCha20-Poly1305 in an RFC 9770-style COSE_Encrypt, decrypted
++  in place in `sys/suit/encrypt/decrypt.c` before `suit_parse()`;
++  sign-then-encrypt on the host (`manifest-encryption/encrypt_manifest.py
++  --key $(SUIT_KEY_DIR)/device_x25519.pem`), decrypt-then-verify on-device.
++  Plaintext manifests still pass through. Verified E2E on native64;
++  samr21-xpro pending (plan Step 5b). Key gotchas: on-device X25519 uses the
++  **c25519 pkg**, never `wolfcrypt_curve25519` (symbol collision
++  `fprime_*` with libcose's c25519 backend); HKDF `info`/AAD CBOR must be
++  byte-exact across sides; the standalone host sample needs
++  `wc_curve25519_set_rng()` (blinding default). See
++  `MANIFEST_ENCRYPTION_CHANGES.md` (changes/gotchas),
++  `MANIFEST_ENCRYPTION_PLAN.md` (status), `manifest-encryption/README.md`
++  (wire format), `NATIVE_SETUP.md` steps 6b/9 (workflow).
+ - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
+   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
+ - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —
+diff --git a/examples/advanced/suit_update/MANIFEST_ENCRYPTION_CHANGES.md b/examples/advanced/suit_update/MANIFEST_ENCRYPTION_CHANGES.md
+new file mode 100644
+index 0000000000..36ba7c5382
+--- /dev/null
++++ b/examples/advanced/suit_update/MANIFEST_ENCRYPTION_CHANGES.md
+@@ -0,0 +1,117 @@
++# SUIT manifest encryption — code changes summary
++
++Companion to `MANIFEST_ENCRYPTION_PLAN.md` (plan + status checklist) in the
++style of `MLDSA_MULTILEVEL_CHANGES.md` / `MLDSA_HARDWARE_FIXES.md`: what was
++changed to add manifest **confidentiality** to the SUIT workflow, and what
++was learned doing it. The combined diff of every file listed below is kept
++as `manifest-encryption-implementation.patch` in this directory (same
++convention as `mldsa-samr21-hardware-fixes.patch`). Status: verified end-to-end on `native64`
++(Ed25519 + encryption: full update; ML-DSA-44 + encryption: decrypt +
++signature verify pass). Real-hardware (`samr21-xpro`) bring-up is pending
++(plan Step 5b).
++
++## What it does
++
++The host encrypts the *signed* manifest for one specific device
++(sign-then-encrypt); the device decrypts it in place before `suit_parse()`
++runs (decrypt-then-verify). Authenticity still comes exclusively from the
++COSE_Sign1 signature — encryption adds confidentiality, not sender
++authentication.
++
++- **Key exchange**: ephemeral-static X25519 ECDH (COSE "ECDH-ES +
++  HKDF-256", alg -25). The device owns a static X25519 keypair; the host
++  generates a fresh ephemeral key per manifest and ships its public half in
++  the container. No online interaction — fits the constrained pull model.
++- **KDF**: HKDF-SHA256 over the shared secret, `info` = COSE_KDF_Context
++  (RFC 9053 §5.2).
++- **AEAD**: ChaCha20-Poly1305 (COSE alg 24), AAD = COSE Enc_structure.
++- **Container**: RFC 9770-style COSE_Encrypt (CBOR tag 96) with a single
++  recipient carrying the ephemeral public key. Full CBOR layout and the
++  byte-exactness rules: `manifest-encryption/README.md`.
++- **Overhead**: ~92 B per manifest (32 B ephemeral key + 12 B nonce +
++  16 B tag + CBOR framing).
++
++## Opt-out contract
++
++Encryption is **on by default**; `SUIT_MANIFEST_ENCRYPT=0` opts out.
++
++| Side | `SUIT_MANIFEST_ENCRYPT=1` (default) | `=0` |
++|---|---|---|
++| App build | `USEMODULE += suit_manifest_encrypt`, buffer +128 B, X25519 device key generated + embedded | module, crypto code, and key completely absent — byte-identical behavior to pre-feature builds |
++| Device runtime | CBOR tag 96 → decrypt in place, then parse; anything else passes through unchanged (legacy plaintext manifests keep working) | plaintext manifests only |
++| Host publish | encrypt after `suit-tool sign` via `manifest-encryption/encrypt_manifest.py --key <device key>` (manual for now) | unchanged pipeline |
++
++## Changed / added files
++
++| File | Change |
++|---|---|
++| `sys/suit/encrypt/decrypt.c` (new) | The decryption engine: nanocbor COSE_Encrypt parsing, c25519 X25519 ECDH, wolfCrypt HKDF-SHA256 + ChaCha20-Poly1305, in-place decrypt, all-zero shared-secret rejection |
++| `sys/suit/encrypt/Makefile` (new) | `MODULE = suit_manifest_encrypt` |
++| `sys/include/suit/manifest_encrypt.h` (new) | `suit_manifest_decrypt()` API: 0 = decrypted, `SUIT_MANIFEST_ENCRYPT_PASSTHROUGH` (1) = not encrypted, <0 = error |
++| `sys/suit/transport/worker.c` | Hook at the top of `suit_handle_manifest_buf()`: decrypt/pass-through before `suit_parse()`; logs `manifest decrypted (N bytes)` / `manifest not encrypted, passing through` |
++| `sys/suit/Makefile` | `DIRS += encrypt` when the module is selected |
++| `sys/suit/Makefile.dep` | Module deps: `USEPKG c25519 + wolfssl`, `wolfcrypt{,_chacha,_poly1305,_hmac}` (chacha20_poly1305 auto-selected) |
++| `pkg/wolfssl/include/user_settings.h` | `HAVE_HKDF` now defined whenever `wolfcrypt_hmac` is used (HKDF code lives in the always-compiled `kdf.c`) |
++| `makefiles/suit.base.inc.mk` | `SUIT_MANIFEST_ENCRYPT ?= 1`; device key handling when the module is selected: `SUIT_ENC_SEC` (default `$(SUIT_KEY_DIR)/device_x25519.pem`, auto-generated via `openssl genpkey -algorithm X25519`, target `suit/genenckey`) → `suit_enc_seckey.h` in `$(BINDIR)/riotbuild/` via `enckey_to_header.py` |
++| `dist/tools/suit/enckey_to_header.py` (new) | X25519 private PEM → `const uint8_t suit_enc_seckey[32]` header (RFC 7748 little-endian raw bytes) |
++| `examples/advanced/suit_update/Makefile` | Module selection + buffer sizing: `SUIT_MANIFEST_BUFSIZE` +128 B when encryption is on (ed25519: 768, ml-dsa-44/65/87: 3200/3968/5504); opt-out leaves everything untouched |
++| `examples/advanced/suit_update/manifest-encryption/` (new, plan Step 1) | Standalone host-only interop example (Python `cryptography` encrypt ↔ wolfCrypt decrypt) + wire-format README; `encrypt_manifest.py` doubles as the host-side encryption tool (`--key`, `-o`) |
++
++## Design decision: c25519 for X25519, not wolfCrypt
++
++The plan originally called for wolfCrypt's curve25519 on-device. That
++fails at link time in the default (Ed25519) configuration: wolfCrypt's
++`CURVE25519_SMALL` implementation pulls `fe_low_mem.c`, which defines
++`fprime_mul`/`fprime_sub` — the same symbols as the c25519 pkg's
++`fprime.c`, which is already linked as libcose's Ed25519 verify backend
++(both vendor the same dlbeer/c25519 math). Using the c25519 pkg's own
++`c25519_smult()` for the ECDH instead:
++
++- resolves the collision without touching either library,
++- adds **zero** new curve code to Ed25519 builds (the pkg is already there),
++- needs no RNG (no blinding), and no byte-order conversion — c25519 and
++  Python's `cryptography` both use RFC 7748 little-endian raw keys.
++
++`c25519_prepare()` applies the RFC 7748 scalar clamping that
++`X25519PrivateKey.exchange()` performs implicitly, and the all-zero
++shared-secret check mirrors `cryptography`'s small-order rejection.
++
++wolfCrypt still provides HKDF-SHA256 and ChaCha20-Poly1305 (and, in ML-DSA
++builds, signature verification — c25519 and wolfCrypt coexist fine as long
++as wolfCrypt's curve25519/ed25519 objects are never pulled in).
++
++## Verification (native64, 2026-07-19)
++
++| Case | Result |
++|---|---|
++| Ed25519-signed, encrypted manifest via `suit fetch file:///nvm0/...` | decrypt → signature verify → payload installed; `storage_content` shows payload |
++| Tampered ciphertext byte | rejected before parsing, AEAD auth error `-213` |
++| Plaintext manifest on encryption-capable firmware | `manifest not encrypted, passing through` → normal verify/update |
++| `SUIT_MANIFEST_ENCRYPT=0` build | compiles, module absent from image (~17 KB smaller text on native64) |
++| ML-DSA-44-signed, encrypted manifest | links cleanly, decrypts, signature verify passes (a post-verify condition failure appears identically with the plain manifest on that binary — unrelated to encryption) |
++
++## Gotchas / lessons learned
++
++- **Symbol collision** (above): never enable `wolfcrypt_curve25519` (or
++  `wolfcrypt_ed25519`) together with the c25519 pkg.
++- **In-place decrypt is safe**: wolfCrypt's `wc_ChaCha20Poly1305_Decrypt`
++  explicitly supports `out == in`, and the Poly1305 tag is computed over
++  the ciphertext as it is consumed. Plaintext lands *inside* `_manifest_buf`
++  at the ciphertext's offset — `suit_parse()` is handed that interior
++  pointer, no memmove.
++- **Byte-exact CBOR**: the HKDF `info` and the AAD must serialize
++  identically on both sides; the device re-uses the *received*
++  protected-header bytes verbatim instead of re-encoding its own.
++- **Standalone sample only**: host builds of wolfSSL default to
++  `WOLFSSL_CURVE25519_BLINDING` → `wc_curve25519_set_rng()` is mandatory or
++  the shared secret fails with `BAD_FUNC_ARG` (-173). RIOT device builds
++  never hit this (c25519 path).
++- **Native testing**: `file://` fetches go through the hostfs mount —
++  `file:///nvm0/<file>` maps to `native/<file>` relative to the elf's CWD;
++  the worker's URL buffer is 64 chars (`CONFIG_SOCK_URLPATH_MAXLEN`), so
++  long host paths get silently truncated.
++- **Security caveats (prototype)**: the device private key is embedded in
++  the firmware image (`suit_enc_seckey.h`) — real deployments need
++  protected key storage. ECDH-ES provides no sender authentication; the
++  manifest signature remains the sole authenticity anchor. Per-device
++  encryption means one `.enc` artifact per device key.
+diff --git a/examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md b/examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md
+index 012bf7b9dc..ecccf25d37 100644
+--- a/examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md
++++ b/examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md
+@@ -7,11 +7,12 @@ Living plan document — future sessions resume from the first unchecked step.
+ - [x] Step 0: this plan saved to the repo
+ - [x] Prerequisite: vendored wolfSSL rebuilt with `--enable-curve25519` (2026-07-18; `HAVE_CURVE25519` now in its `options.h`)
+ - [x] Step 1: standalone E2E example in `manifest-encryption/` (encrypt_manifest.py, wolfcrypt-sample.c, README.md) verified end-to-end (2026-07-18: interop MATCH, tamper rejected, 3.7KB manifest-sized payload OK, ml-dsa-44 regression OK; gotcha found: `WOLFSSL_CURVE25519_BLINDING` is on by default → `wc_curve25519_set_rng()` required or shared-secret fails with -173)
+-- [ ] Step 2: device integration (decrypt hook in `sys/suit/transport/worker.c`, `suit_manifest_encrypt` pseudomodule, opt-out flag)
+-- [ ] Step 3: host tooling (`suit/encrypt` make target, device-key header generation)
+-- [ ] Step 4: buffer sizing (`SUIT_MANIFEST_BUFSIZE` + ~130 B)
+-- [ ] Step 5: E2E on native64, then samr21-xpro (see feasibility section)
+-- [ ] Step 6: documentation (NATIVE_SETUP.md, SAMR21_EXAMPLES.md, MANIFEST_ENCRYPTION_CHANGES.md, CLAUDE.md)
++- [x] Step 2: device integration (2026-07-19, verified E2E on native64 with Ed25519: encrypted fetch decrypts+verifies+installs, tampered container rejected with -213, plaintext manifest passes through, `SUIT_MANIFEST_ENCRYPT=0` opt-out build excludes the module entirely). **Design deviation from the original plan**: on-device X25519 uses the **c25519 pkg** (already linked as libcose's Ed25519 verify backend), NOT wolfCrypt's curve25519 — wolfCrypt's `CURVE25519_SMALL` pulls `fe_low_mem.c`, whose `fprime_*` symbols collide at link time with the c25519 pkg's `fprime.c` (both vendor the same dlbeer math). wolfCrypt still does HKDF-SHA256 (+ new `HAVE_HKDF` gate on `wolfcrypt_hmac` in `pkg/wolfssl/include/user_settings.h`) and ChaCha20-Poly1305. Bonus: c25519 needs no RNG (no blinding) and adds zero new curve code to the samr21 image. New files: `sys/suit/encrypt/decrypt.c`, `sys/include/suit/manifest_encrypt.h`, `dist/tools/suit/enckey_to_header.py`; hooks in `sys/suit/transport/worker.c` (`suit_handle_manifest_buf`), `sys/suit/Makefile{,.dep}`, `makefiles/suit.base.inc.mk` (X25519 device-key gen + `suit_enc_seckey.h` header + `suit/genenckey` target), app `Makefile` (module + buffer sizing).
++- [x] Step 3: host tooling — key gen/header embedding landed with Step 2 (`SUIT_ENC_SEC`, `suit/genenckey`); manifest encryption itself stays a manual `encrypt_manifest.py --key ... -o ...` call after `suit-tool sign` for now (a `suit/publish`-integrated encrypt step can follow if wanted)
++- [x] Step 4: buffer sizing — app Makefile adds +128 B to `SUIT_MANIFEST_BUFSIZE` for all key algos when encryption is on (ed25519: 768, ml-dsa-44: 3200, -65: 3968, -87: 5504)
++- [x] Step 5a: E2E on native64 (2026-07-19) — Ed25519+encryption: full update success (decrypt → verify → install, `storage_content` shows payload); ML-DSA-44+encryption: builds and links cleanly (c25519 + wolfcrypt coexist), decrypts and passes signature verification — accepted per test criterion (decrypt path works, pass-through works); a downstream condition failure (`res=-4` plain / `res=-1` encrypted, after successful signature verify) exists identically in the plain path on that binary, i.e. unrelated to encryption. Note: native VFS fetches use `file:///nvm0/<file>` (host dir `native/` next to the elf's CWD); the worker URL buffer is 64 chars.
++- [ ] Step 5b: E2E on samr21-xpro (see feasibility section; recommended pairing Ed25519+encryption first)
++- [x] Step 6 (partial, 2026-07-19): `MANIFEST_ENCRYPTION_CHANGES.md` written (changes, opt-out contract, verification, gotchas); `NATIVE_SETUP.md` extended with the encrypted flow (step 6b encrypt-after-sign, step 9 opt-out, pass-through/tamper log lines, `/nvm0` vfs tip); `CLAUDE.md` updated (file tables, E2E reference, gotchas bullet). `SAMR21_EXAMPLES.md` now carries Example E, a draft encrypted-manifest walkthrough explicitly banner-marked **UNVERIFIED** with an E.9 bring-up checklist — Step 5b executes that checklist, then drops the banner and records the measured sizes.
+ 
+ ## Context
+ 
+diff --git a/examples/advanced/suit_update/Makefile b/examples/advanced/suit_update/Makefile
+index a0875dbc26..6ca296e0d6 100644
+--- a/examples/advanced/suit_update/Makefile
++++ b/examples/advanced/suit_update/Makefile
+@@ -55,17 +55,35 @@ ifneq (,$(filter ml-dsa-%,$(SUIT_KEY_ALGO)))
+   # level: signature + ~530B envelope overhead, rounded up, while saving
+   # RAM over rounder values on 32KB-RAM boards.
+   ifeq (ml-dsa-44,$(SUIT_KEY_ALGO))
+-    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=3072
++    SUIT_MANIFEST_BUFSIZE = 3072
+   else ifeq (ml-dsa-87,$(SUIT_KEY_ALGO))
+-    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=5376
++    SUIT_MANIFEST_BUFSIZE = 5376
+   else
+-    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=3840
++    SUIT_MANIFEST_BUFSIZE = 3840
+   endif
+   # The ML-DSA verify work state lives in a static MlDsaKey (see
+   # pkg/libcose's wolfcrypt_mldsa.c backend), not on the worker stack, so
+   # the default 6KB stack suffices for the verify itself; shrink it to 4KB
+   # to fit the ~10KB (ML-DSA-65) static key state within a 32KB RAM budget.
+   CFLAGS += -DSUIT_WORKER_STACKSIZE=4096
++else
++  SUIT_MANIFEST_BUFSIZE = 640
++endif
++
++# Manifest confidentiality: on by default, opt out with
++# SUIT_MANIFEST_ENCRYPT=0 (module selection must happen here, before
++# dependency resolution; key handling lives in makefiles/suit.base.inc.mk,
++# workflow in MANIFEST_ENCRYPTION_PLAN.md). The COSE_Encrypt wrapper adds
++# ~130B to the manifest (32B ephemeral key + 12B nonce + 16B tag + CBOR
++# framing), so grow the fetch buffer accordingly.
++SUIT_MANIFEST_ENCRYPT ?= 1
++ifeq (1,$(SUIT_MANIFEST_ENCRYPT))
++  USEMODULE += suit_manifest_encrypt
++  SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 128)
++endif
++
++ifneq (640,$(SUIT_MANIFEST_BUFSIZE))
++  CFLAGS += -DSUIT_MANIFEST_BUFSIZE=$(SUIT_MANIFEST_BUFSIZE)
+ endif
+ 
+ # enable VFS transport (only works on boards with external storage)
+diff --git a/examples/advanced/suit_update/NATIVE_SETUP.md b/examples/advanced/suit_update/NATIVE_SETUP.md
+index 7c3271d16e..ae3dc178e5 100644
+--- a/examples/advanced/suit_update/NATIVE_SETUP.md
++++ b/examples/advanced/suit_update/NATIVE_SETUP.md
+@@ -4,6 +4,14 @@ Short recipe for exercising the SUIT update flow on `BOARD=native` (no
+ hardware required). On a 64-bit host, `native` resolves to `native64` —
+ this affects the tap interface number and the class ID below.
+ 
++Manifest **encryption is on by default** (`SUIT_MANIFEST_ENCRYPT=1`, see
++step 9 and `MANIFEST_ENCRYPTION_CHANGES.md`): the build auto-generates an
++X25519 device key next to the signing key and embeds it in the firmware,
++and the published manifest must then be encrypted after signing (step 6b).
++For the classic unencrypted flow, build with `SUIT_MANIFEST_ENCRYPT=0` and
++skip step 6b — or don't: an encryption-capable firmware also accepts
++plaintext manifests (pass-through).
++
+ ## 1. Prerequisites
+ 
+ ```bash
+@@ -43,6 +51,11 @@ SUIT_KEY_DIR=$(pwd)/keys SUIT_KEY=native_ed25519 BOARD=native \
+   make -C examples/advanced/suit_update all term
+ ```
+ 
++With encryption on (the default) this also creates the device's X25519 key
++`keys/device_x25519.pem` on first build (or explicitly via the
++`suit/genenckey` target) and embeds its private half in the firmware —
++remember the same `SUIT_KEY_DIR` when encrypting in step 6b.
++
+ In the RIOT shell, add an address on the tap interface (interface `6` on a
+ 64-bit host, since `native` → `native64`):
+ 
+@@ -70,12 +83,49 @@ dist/tools/suit/suit-manifest-generator/bin/suit-tool sign \
+ (`SUIT_CLASS_ID`, printed by `make` as `using BOARD="native64" as "native"`).
+ A mismatch fails with `suit_worker: suit_parse() failed. res=-4`.
+ 
++## 6b. Encrypt the signed manifest (default; skip only with SUIT_MANIFEST_ENCRYPT=0)
++
++Encrypt for the device key the firmware was built with (same
++`SUIT_KEY_DIR`):
++
++```bash
++python3 examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py \
++  --key keys/device_x25519.pem \
++  -o coaproot/suit_manifest.enc coaproot/suit_manifest.signed
++```
++
++The tool prints a Python-side decrypt self-test (`Self-test decrypt: OK`)
++and the container overhead (~92 bytes). It also drops `encrypted.h` /
++`plaintext.h` / `device_*.h` helper headers into the current directory
++(standalone-example artifacts, safe to delete here).
++
+ ## 7. Trigger the update from the RIOT shell
+ 
+ ```
+-> suit fetch coap://[2001:db8::1]/suit_manifest.signed
++> suit fetch coap://[2001:db8::1]/suit_manifest.enc
+ ```
+ 
++(or `suit_manifest.signed` for the unencrypted flow). Expected log with
++encryption:
++
++```
++suit_worker: got manifest with size 466
++suit_worker: manifest decrypted (374 bytes)
++suit: verifying manifest signature
++...
++suit_worker: update successful
++```
++
++A plaintext manifest on an encryption-capable firmware instead logs
++`suit_worker: manifest not encrypted, passing through` and proceeds
++normally; a tampered/wrongly-encrypted container is rejected before
++parsing with `suit_worker: manifest decryption failed. res=-213`.
++
++Tip for quick tests without networking: the vfs transport works too —
++copy the manifest to `examples/advanced/suit_update/native/` and
++`suit fetch file:///nvm0/<file>` (that host directory is the `/nvm0`
++mount, relative to where the elf runs; keep the URL under 64 chars).
++
+ ## 8. Verify
+ 
+ ```
+@@ -84,3 +134,16 @@ A mismatch fails with `suit_worker: suit_parse() failed. res=-4`.
+ 
+ Increase `--seqnr` on every subsequent manifest — it's a strict monotonic
+ counter.
++
++## 9. Opting out of encryption
++
++```bash
++SUIT_MANIFEST_ENCRYPT=0 SUIT_KEY_DIR=$(pwd)/keys SUIT_KEY=native_ed25519 \
++  BOARD=native make -C examples/advanced/suit_update all term
++```
++
++This drops the decryption module, its crypto dependencies, and the embedded
++device key from the image entirely (~17 KB smaller on native64) —
++behavior is byte-identical to the pre-encryption workflow: publish and
++fetch `suit_manifest.signed`, skip step 6b. Full details:
++`MANIFEST_ENCRYPTION_CHANGES.md`.
+diff --git a/examples/advanced/suit_update/SAMR21_EXAMPLES.md b/examples/advanced/suit_update/SAMR21_EXAMPLES.md
+index 5340453ad9..e62f03754c 100644
+--- a/examples/advanced/suit_update/SAMR21_EXAMPLES.md
++++ b/examples/advanced/suit_update/SAMR21_EXAMPLES.md
+@@ -8,6 +8,11 @@ signing algorithm baked into the firmware and used to sign updates:
+ - **Example C — ML-DSA-44** (post-quantum, FIPS 204, category 2)
+ - **Example D — ML-DSA-87** (post-quantum, FIPS 204, category 5)
+ 
++plus one orthogonal add-on that layers on top of any of them:
++
++- **Example E — Encrypted manifests** (X25519 + ChaCha20-Poly1305
++  confidentiality; **unverified draft**, see its own status note)
++
+ Run each command as its own line in the WSL shell, from the repo root
+ (`~/masterthesis/RIOT` or wherever this checkout lives). All four examples
+ share the same one-time setup (Parts 0–2); only key generation, flashing,
+@@ -29,6 +34,13 @@ this board already left only ~216B spare with the smaller ML-DSA-65 key.
+ Treat Example D as a "does it even build and flash" experiment, not a
+ proven flow.
+ 
++**Since manifest encryption landed (default-on, see Example E)**: builds of
++A/B/C now also embed an auto-generated X25519 device key, and their
++unencrypted publishes keep working via the device-side pass-through
++(`suit_worker: manifest not encrypted, passing through` in the terminal —
++that line is the only visible change). Build with `SUIT_MANIFEST_ENCRYPT=0`
++to reproduce the exact pre-encryption images.
++
+ ---
+ 
+ ## Part 0 — One-time host setup
+@@ -443,6 +455,117 @@ surprising either.
+ 
+ ---
+ 
++# Example E — Encrypted manifests (X25519 + ChaCha20-Poly1305)
++
++> **⚠ UNVERIFIED DRAFT — to be verified on real hardware.** This walkthrough
++> is written from the working `native64` end-to-end flow
++> (`MANIFEST_ENCRYPTION_CHANGES.md`) and has **not** yet been executed on a
++> real samr21-xpro (plan Step 5b in `MANIFEST_ENCRYPTION_PLAN.md`). Commands
++> and expected log lines follow the same conventions as A–D but may need
++> correction during bring-up; update this section (and drop this banner)
++> once a full encrypted update has succeeded on the board.
++
++Encryption is orthogonal to the signing algorithm: it wraps the *signed*
++manifest in a COSE_Encrypt container (ephemeral-static X25519 → HKDF-SHA256
++→ ChaCha20-Poly1305, ~92B overhead) that the device decrypts in place
++before parsing. It is **on by default** in this app's build
++(`SUIT_MANIFEST_ENCRYPT=1`), so A/B/C flashes are already
++encryption-capable — Example E only changes what gets *published*.
++
++**Expected RAM feasibility** (from `MANIFEST_ENCRYPTION_PLAN.md`; the
++decrypt code adds ChaCha20-Poly1305 + HKDF flash but reuses the c25519
++curve code already linked for Ed25519, and the manifest buffer grows 128B):
++
++| Base example | Expectation on samr21-xpro |
++|---|---|
++| E on top of A (Ed25519) | **recommended first target** — ample headroom |
++| E on top of C (ML-DSA-44) | plausible — C had headroom to spare |
++| E on top of B (ML-DSA-65) | at risk — B had only ~216B RAM slack; +128B buffer leaves ≲90B, expect possible `.bss` overflow at link |
++| E on top of D (ML-DSA-87) | out of the question — D already fails to link |
++
++## E.0 — Prerequisite
++
++Complete a working base example first (A recommended) up to and including
++its flash step — the flash **must** be from a build with encryption on
++(the default), which also auto-generates the device key
++`$SUIT_KEY_DIR/device_x25519.pem` and bakes its private half into the
++firmware. Keep the A.4-style exports set; E reuses them. (To pre-generate
++the key without building: `suit/genenckey` with the same variables.)
++
++## E.5 — Flash (only if the board isn't already running an encryption-capable build)
++
++Identical to A.5/B.5/C.5 — no extra variables needed; `make` prints
++`suit: generating manifest-encryption key in ...` on the first build.
++Reflashing after the device key already exists reuses it.
++
++## E.7 — Publish a signed update, then encrypt the manifest
++
++Publish exactly as in A.7/B.7/C.7 (same variables, fresh
++`APP_VER=$(date +%s)`), then encrypt the published manifest **for this
++board's device key** (published manifests land in `coaproot/` as
++`riot.suit.$APP_VER.bin` / `riot.suit.latest.bin`):
++
++```sh
++python3 examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py \
++  --key $SUIT_KEY_DIR/device_x25519.pem \
++  -o coaproot/riot.suit.enc coaproot/riot.suit.latest.bin
++```
++
++Expect `Self-test decrypt: OK` and a ~92-byte overhead report. (The tool
++also drops `encrypted.h`/`plaintext.h`/`device_*.h` helper headers in the
++current directory — standalone-example artifacts, safe to delete.)
++
++## E.8 — Notify the device with the encrypted manifest
++
++Point the notify at the encrypted file instead of the default name:
++
++```sh
++SUIT_NOTIFY_MANIFEST=riot.suit.enc \
++  SUIT_COAP_SERVER=[2001:db8::1] SUIT_CLIENT=[fe80::2%riot0] \
++  BOARD=samr21-xpro make -C examples/advanced/suit_update suit/notify
++```
++
++Alternatively, trigger directly from the board's shell (E.6 terminal):
++
++```
++> suit fetch coap://[2001:db8::1]/riot.suit.enc
++```
++
++(Keep the URL under 64 chars — the worker's URL buffer truncates silently.)
++
++## E.9 — What "verified" looks like
++
++Watch the board's terminal; the expected sequence (observed on native64):
++
++```
++suit_worker: got manifest with size <N+92>
++suit_worker: manifest decrypted (<N> bytes)
++suit: verifying manifest signature
++...
++suit_worker: update successful
++```
++
++followed by the reboot into the new slot. Bring-up checklist to promote
++this section to "verified":
++
++1. Encrypted update end-to-end (decrypt → verify → download → reboot).
++2. Plaintext publish still accepted (pass-through line, A.7/A.8 unchanged).
++3. Tampered container rejected: flip one byte in `riot.suit.enc`, re-notify
++   with it, expect `suit_worker: manifest decryption failed. res=-213`
++   (bump nothing — a rejected manifest doesn't consume the seqnr).
++4. Repeat update cycle twice more (RAM stability, as in the ML-DSA
++   bring-up), then record the `text/data/bss` numbers here and in
++   `MANIFEST_ENCRYPTION_CHANGES.md`.
++
++Failure modes to expect on this board (from the feasibility notes): a
++`.bss`/`ram` overflow at link time on top of ML-DSA-65 (like Example D's
++error, smaller), or a worker-stack shortfall during decrypt — re-measure
++with `ps` stack watermarks, and remember the M0+ lesson from
++`MLDSA_HARDWARE_FIXES.md`: big structs go `static`, never on the 4KB worker
++stack.
++
++---
++
+ ## Gotchas that apply to all examples
+ 
+ - **`res=-5` / `seq_nr <= running image` on re-notify is expected** — the
+diff --git a/examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py b/examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py
+index a4d1c1b27a..8b6b442dca 100644
+--- a/examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py
++++ b/examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py
+@@ -60,6 +60,11 @@ def parse_arguments():
+                              'a built-in test message is used if omitted')
+     parser.add_argument('--output', '-o', default="manifest.cose",
+                         help='Encrypted COSE_Encrypt output file')
++    parser.add_argument('--key', '-k', default=DEVICE_KEY_FILE,
++                        help='Device X25519 private key PEM (e.g. the '
++                             'SUIT_ENC_SEC key the firmware was built with, '
++                             'default: ~/.local/share/RIOT/keys/'
++                             'device_x25519.pem); generated if missing')
+     return parser.parse_args()
+ 
+ 
+@@ -79,16 +84,16 @@ def format_byte_array(name, data):
+     return "\n".join(lines)
+ 
+ 
+-def device_keypair():
++def device_keypair(key_file):
+     """Load the device's static X25519 key, generating it on first run."""
+-    if os.path.exists(DEVICE_KEY_FILE):
+-        with open(DEVICE_KEY_FILE, "rb") as f:
++    if os.path.exists(key_file):
++        with open(key_file, "rb") as f:
+             private_key = serialization.load_pem_private_key(f.read(), None)
+-        print(f"Loaded device key from {DEVICE_KEY_FILE}")
++        print(f"Loaded device key from {key_file}")
+         return private_key
+ 
+     private_key = X25519PrivateKey.generate()
+-    write_file(DEVICE_KEY_FILE, private_key.private_bytes(
++    write_file(key_file, private_key.private_bytes(
+         serialization.Encoding.PEM,
+         serialization.PrivateFormat.PKCS8,
+         serialization.NoEncryption()))
+@@ -98,7 +103,7 @@ def device_keypair():
+         "device_seckey", private_key.private_bytes_raw()))
+     write_file("device_pubkey.h", format_byte_array(
+         "device_pubkey", private_key.public_key().public_bytes_raw()))
+-    print(f"Generated device key: {DEVICE_KEY_FILE}, "
++    print(f"Generated device key: {key_file}, "
+           "device_seckey.h, device_pubkey.h")
+     return private_key
+ 
+@@ -170,7 +175,7 @@ def main(args):
+     print("SUIT manifest encryption (X25519 + HKDF-SHA256 + "
+           "ChaCha20-Poly1305) - START")
+ 
+-    device_key = device_keypair()
++    device_key = device_keypair(args.key)
+ 
+     if args.input:
+         with open(args.input, "rb") as f:
+diff --git a/makefiles/suit.base.inc.mk b/makefiles/suit.base.inc.mk
+index 4ea6f5339c..7a63341b9c 100644
+--- a/makefiles/suit.base.inc.mk
++++ b/makefiles/suit.base.inc.mk
+@@ -107,3 +107,35 @@ $(SUIT_PUB_HDR): $(SUIT_PUBS) FORCE | $(CLEAN)
+ 		'$(LAZYSPONGE)' $(LAZYSPONGE_FLAGS) '$@'
+ 
+ suit/genkey: $(SUIT_SEC)
++
++#
++# SUIT manifest encryption (confidentiality) - see
++# examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md.
++#
++# On by default; opt out with SUIT_MANIFEST_ENCRYPT=0. Like the ML-DSA
++# modules, the suit_manifest_encrypt module itself must be selected in the
++# app Makefile (this file is included after dependency resolution). Here we
++# manage the device's static X25519 keypair and embed its private key into
++# the firmware via a generated header (prototype-grade key storage: the key
++# ends up in the image).
++export SUIT_MANIFEST_ENCRYPT ?= 1
++
++ifneq (,$(filter suit_manifest_encrypt,$(USEMODULE)))
++  SUIT_ENC_KEY ?= device_x25519
++  SUIT_ENC_SEC ?= $(SUIT_KEY_DIR)/$(SUIT_ENC_KEY).pem
++  SUIT_ENC_HDR = $(SUIT_PUB_HDR_DIR)suit_enc_seckey.h
++  BUILDDEPS += $(SUIT_ENC_HDR)
++
++  $(SUIT_ENC_SEC): | $(CLEAN)
++	$(Q)echo suit: generating manifest-encryption key in $(SUIT_KEY_DIR)
++	$(Q)mkdir -p $(SUIT_KEY_DIR)
++	$(Q)openssl genpkey -algorithm X25519 -out $@
++
++  # FORCE for the same key-switching reason as SUIT_PUB_HDR above
++  $(SUIT_ENC_HDR): $(SUIT_ENC_SEC) FORCE | $(CLEAN)
++	$(Q)mkdir -p $(SUIT_PUB_HDR_DIR)
++	$(Q)$(RIOTBASE)/dist/tools/suit/enckey_to_header.py $< | \
++		'$(LAZYSPONGE)' $(LAZYSPONGE_FLAGS) '$@'
++
++suit/genenckey: $(SUIT_ENC_SEC)
++endif
+diff --git a/pkg/wolfssl/include/user_settings.h b/pkg/wolfssl/include/user_settings.h
+index 46625d7a62..a4c08abbf4 100644
+--- a/pkg/wolfssl/include/user_settings.h
++++ b/pkg/wolfssl/include/user_settings.h
+@@ -182,6 +182,10 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
+ 
+ #ifndef MODULE_WOLFCRYPT_HMAC
+ #define NO_HMAC
++#else
++/* HKDF (RFC 5869) builds on HMAC; its code lives in kdf.c, which is always
++ * compiled (see Makefile.wolfcrypt), so gating it here costs nothing */
++#define HAVE_HKDF
+ #endif
+ 
+ #undef NO_SHA
+diff --git a/sys/include/suit/manifest_encrypt.h b/sys/include/suit/manifest_encrypt.h
+new file mode 100644
+index 0000000000..cf2bd80ae3
+--- /dev/null
++++ b/sys/include/suit/manifest_encrypt.h
+@@ -0,0 +1,70 @@
++/*
++ * Copyright (C) 2026 Miguel Arcilla
++ *
++ * This file is subject to the terms and conditions of the GNU Lesser
++ * General Public License v2.1. See the file LICENSE in the top level
++ * directory for more details.
++ */
++
++/**
++ * @ingroup     sys_suit
++ * @brief       SUIT manifest confidentiality (COSE_Encrypt decryption)
++ *
++ * Decrypts RFC 9770-style COSE_Encrypt containers wrapping a signed SUIT
++ * manifest: ephemeral-static X25519 ECDH (COSE ECDH-ES + HKDF-256) derives a
++ * ChaCha20-Poly1305 content key via wolfCrypt. The device's static X25519
++ * private key is embedded at build time (suit_enc_seckey.h, generated from
++ * SUIT_ENC_SEC by makefiles/suit.base.inc.mk).
++ *
++ * @{
++ *
++ * @file
++ * @brief       SUIT manifest decryption API
++ *
++ * @author      Miguel Arcilla <miguelkristopharcilla@gmail.com>
++ */
++#ifndef SUIT_MANIFEST_ENCRYPT_H
++#define SUIT_MANIFEST_ENCRYPT_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * @brief   Manifest was not encrypted (no COSE_Encrypt tag) and is passed
++ *          through unchanged
++ */
++#define SUIT_MANIFEST_ENCRYPT_PASSTHROUGH   (1)
++
++/**
++ * @brief   Decrypt a COSE_Encrypt-wrapped SUIT manifest in place
++ *
++ * If @p buf starts with a COSE_Encrypt container (CBOR tag 96), it is
++ * decrypted in place (ChaCha20 is a stream cipher, so the plaintext
++ * overwrites the ciphertext bytes within @p buf) and @p plaintext /
++ * @p plaintext_len are pointed at the recovered signed manifest inside
++ * @p buf. Anything else is treated as a plaintext manifest and passed
++ * through unchanged, so an encryption-capable firmware still accepts
++ * legacy unencrypted manifests.
++ *
++ * @param[in,out]   buf             manifest buffer (modified on decryption)
++ * @param[in]       size            length of the (possibly encrypted) manifest
++ * @param[out]      plaintext       points into @p buf at the plaintext manifest
++ * @param[out]      plaintext_len   length of the plaintext manifest
++ *
++ * @return  0 on successful decryption
++ * @return  @ref SUIT_MANIFEST_ENCRYPT_PASSTHROUGH if @p buf is not encrypted
++ * @return  <0 on parse, key-agreement, or authentication failure
++ */
++int suit_manifest_decrypt(uint8_t *buf, size_t size,
++                          const uint8_t **plaintext, size_t *plaintext_len);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* SUIT_MANIFEST_ENCRYPT_H */
++/** @} */
+diff --git a/sys/suit/Makefile b/sys/suit/Makefile
+index b630980f31..de409f8058 100644
+--- a/sys/suit/Makefile
++++ b/sys/suit/Makefile
+@@ -6,4 +6,8 @@ ifneq (,$(filter suit_storage_%,$(USEMODULE)))
+   DIRS += storage
+ endif
+ 
++ifneq (,$(filter suit_manifest_encrypt,$(USEMODULE)))
++  DIRS += encrypt
++endif
++
+ include $(RIOTBASE)/Makefile.base
+diff --git a/sys/suit/Makefile.dep b/sys/suit/Makefile.dep
+index c893de2f4f..2acd9d51b7 100644
+--- a/sys/suit/Makefile.dep
++++ b/sys/suit/Makefile.dep
+@@ -14,6 +14,21 @@ ifeq (,$(filter libcose_crypt_%,$(USEMODULE)))
+   USEMODULE += libcose_crypt_c25519
+ endif
+ 
++# manifest decryption: X25519 via the c25519 pkg (its fprime_* symbols
++# collide with wolfCrypt's fe_low_mem.c, so wolfCrypt's own CURVE25519_SMALL
++# implementation can't coexist with the libcose c25519 signature backend);
++# HKDF-SHA256 + ChaCha20-Poly1305 via wolfCrypt (chacha20_poly1305 is
++# auto-selected by chacha + poly1305 in pkg/wolfssl/Makefile.dep; HKDF rides
++# on hmac, see user_settings.h)
++ifneq (,$(filter suit_manifest_encrypt,$(USEMODULE)))
++  USEPKG += c25519
++  USEPKG += wolfssl
++  USEMODULE += wolfcrypt
++  USEMODULE += wolfcrypt_chacha
++  USEMODULE += wolfcrypt_poly1305
++  USEMODULE += wolfcrypt_hmac
++endif
++
+ ifneq (,$(filter suit_transport_%, $(USEMODULE)))
+   USEMODULE += suit_transport
+   USEMODULE += suit_transport_worker
+diff --git a/sys/suit/encrypt/Makefile b/sys/suit/encrypt/Makefile
+new file mode 100644
+index 0000000000..f9166a61fe
+--- /dev/null
++++ b/sys/suit/encrypt/Makefile
+@@ -0,0 +1,3 @@
++MODULE = suit_manifest_encrypt
++
++include $(RIOTBASE)/Makefile.base
+diff --git a/sys/suit/encrypt/decrypt.c b/sys/suit/encrypt/decrypt.c
+new file mode 100644
+index 0000000000..192900a892
+--- /dev/null
++++ b/sys/suit/encrypt/decrypt.c
+@@ -0,0 +1,283 @@
++/*
++ * Copyright (C) 2026 Miguel Arcilla
++ *
++ * This file is subject to the terms and conditions of the GNU Lesser
++ * General Public License v2.1. See the file LICENSE in the top level
++ * directory for more details.
++ */
++
++/**
++ * @ingroup     sys_suit
++ * @{
++ *
++ * @file
++ * @brief       SUIT manifest decryption (COSE_Encrypt, X25519 + HKDF-SHA256 +
++ *              ChaCha20-Poly1305 via wolfCrypt)
++ *
++ * Device-side counterpart of dist tooling's encrypt step; the wire format
++ * and the byte-exact KDF-context/AAD rules are documented in
++ * examples/advanced/suit_update/manifest-encryption/README.md, whose
++ * standalone sample this implementation mirrors.
++ *
++ * @author      Miguel Arcilla <miguelkristopharcilla@gmail.com>
++ * @}
++ */
++
++#include <stdint.h>
++#include <string.h>
++
++#include "log.h"
++#include "suit/manifest_encrypt.h"
++
++/* X25519 via the c25519 pkg (dlbeer): already linked for Ed25519 manifest
++ * verification (libcose_crypt_c25519), and its low-mem field arithmetic
++ * shares symbol names (fprime_*) with wolfCrypt's fe_low_mem.c, so pulling
++ * wolfCrypt's CURVE25519_SMALL implementation alongside it would collide at
++ * link time. wolfCrypt still provides HKDF + ChaCha20-Poly1305. */
++#include "c25519.h"
++
++#include <wolfssl/wolfcrypt/settings.h>
++#include <wolfssl/wolfcrypt/hmac.h>
++#include <wolfssl/wolfcrypt/kdf.h>
++#include <wolfssl/wolfcrypt/chacha20_poly1305.h>
++#include <wolfssl/wolfcrypt/error-crypt.h>
++
++#include <nanocbor/nanocbor.h>
++
++#define X25519_KEYSIZE  (32)
++
++/* const uint8_t suit_enc_seckey[32]; generated into $(BINDIR)/riotbuild by
++ * makefiles/suit.base.inc.mk from the SUIT_ENC_SEC X25519 key */
++#include "suit_enc_seckey.h"
++
++#define COSE_ALG_CHACHA20_POLY1305  24
++#define COSE_ALG_ECDH_ES_HKDF_256  (-25)
++#define COSE_TAG_ENCRYPT            96
++#define COSE_HDR_IV                 5
++#define COSE_KEY_PARAM_EPHEMERAL   (-1)
++#define COSE_KEY_PARAM_X          (-2)
++
++#define NONCE_LEN  CHACHA20_POLY1305_AEAD_IV_SIZE      /* 12 */
++#define TAG_LEN    CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE /* 16 */
++
++/* Parsed fields of the COSE_Encrypt container (pointers into the buffer) */
++typedef struct {
++    const uint8_t *body_protected;      /* serialized {1: 24} */
++    size_t body_protected_len;
++    const uint8_t *recipient_protected; /* serialized {1: -25} */
++    size_t recipient_protected_len;
++    const uint8_t *nonce;               /* 12 bytes */
++    const uint8_t *ciphertext;          /* without the trailing tag */
++    size_t ciphertext_len;
++    const uint8_t *auth_tag;            /* 16 bytes */
++    const uint8_t *ephemeral_pub;       /* 32 bytes */
++} cose_encrypt_msg_t;
++
++/* Fetch the value for `wanted` from a CBOR map, skipping other entries */
++static int _map_get_bstr(nanocbor_value_t *map, int32_t wanted,
++                         const uint8_t **buf, size_t *len)
++{
++    while (!nanocbor_at_end(map)) {
++        int32_t key;
++        if (nanocbor_get_int32(map, &key) < 0) {
++            return -1;
++        }
++        if (key == wanted) {
++            return nanocbor_get_bstr(map, buf, len) < 0 ? -1 : 0;
++        }
++        if (nanocbor_skip(map) < 0) {
++            return -1;
++        }
++    }
++    return -1;
++}
++
++static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
++                               cose_encrypt_msg_t *msg)
++{
++    nanocbor_value_t it, body, map, recipients, recipient, key_map;
++    uint32_t tag;
++    const uint8_t *ct;
++    size_t ct_len, eph_len, nonce_len;
++
++    nanocbor_decoder_init(&it, buf, len);
++    if (nanocbor_get_tag(&it, &tag) < 0 || tag != COSE_TAG_ENCRYPT) {
++        return -1;
++    }
++    if (nanocbor_enter_array(&it, &body) < 0 ||
++        nanocbor_get_bstr(&body, &msg->body_protected,
++                          &msg->body_protected_len) < 0) {
++        return -1;
++    }
++    if (nanocbor_enter_map(&body, &map) < 0 ||
++        _map_get_bstr(&map, COSE_HDR_IV, &msg->nonce, &nonce_len) < 0 ||
++        nonce_len != NONCE_LEN) {
++        return -1;
++    }
++    nanocbor_leave_container(&body, &map);
++    if (nanocbor_get_bstr(&body, &ct, &ct_len) < 0 || ct_len < TAG_LEN) {
++        return -1;
++    }
++    msg->ciphertext = ct;
++    msg->ciphertext_len = ct_len - TAG_LEN;
++    msg->auth_tag = ct + ct_len - TAG_LEN;
++
++    /* single recipient: [protected, {-1: COSE_Key}, h''] */
++    if (nanocbor_enter_array(&body, &recipients) < 0 ||
++        nanocbor_enter_array(&recipients, &recipient) < 0 ||
++        nanocbor_get_bstr(&recipient, &msg->recipient_protected,
++                          &msg->recipient_protected_len) < 0) {
++        return -1;
++    }
++    if (nanocbor_enter_map(&recipient, &map) < 0) {
++        return -1;
++    }
++    while (!nanocbor_at_end(&map)) {
++        int32_t key;
++        if (nanocbor_get_int32(&map, &key) < 0) {
++            return -1;
++        }
++        if (key == COSE_KEY_PARAM_EPHEMERAL) {
++            if (nanocbor_enter_map(&map, &key_map) < 0 ||
++                _map_get_bstr(&key_map, COSE_KEY_PARAM_X,
++                              &msg->ephemeral_pub, &eph_len) < 0 ||
++                eph_len != X25519_KEYSIZE) {
++                return -1;
++            }
++            return 0;
++        }
++        if (nanocbor_skip(&map) < 0) {
++            return -1;
++        }
++    }
++    return -1;
++}
++
++/* HKDF info: COSE_KDF_Context (RFC 9053 5.2), byte-identical to the host:
++ * [24, [null,null,null], [null,null,null],
++ *  [256, <recipient protected header bstr>]] */
++static int _build_kdf_context(const cose_encrypt_msg_t *msg,
++                              uint8_t *out, size_t out_len, size_t *written)
++{
++    nanocbor_encoder_t enc;
++    nanocbor_encoder_init(&enc, out, out_len);
++    nanocbor_fmt_array(&enc, 4);
++    nanocbor_fmt_int(&enc, COSE_ALG_CHACHA20_POLY1305);
++    for (int party = 0; party < 2; party++) {
++        nanocbor_fmt_array(&enc, 3);
++        for (int i = 0; i < 3; i++) {
++            nanocbor_fmt_null(&enc);
++        }
++    }
++    nanocbor_fmt_array(&enc, 2);
++    nanocbor_fmt_uint(&enc, 256);
++    nanocbor_put_bstr(&enc, msg->recipient_protected,
++                      msg->recipient_protected_len);
++    *written = nanocbor_encoded_len(&enc);
++    return *written <= out_len ? 0 : -1;
++}
++
++/* AAD: Enc_structure (RFC 9052 5.3) ["Encrypt", <body protected bstr>, h''],
++ * reusing the received protected-header bytes verbatim */
++static int _build_enc_structure(const cose_encrypt_msg_t *msg,
++                                uint8_t *out, size_t out_len, size_t *written)
++{
++    nanocbor_encoder_t enc;
++    nanocbor_encoder_init(&enc, out, out_len);
++    nanocbor_fmt_array(&enc, 3);
++    nanocbor_put_tstr(&enc, "Encrypt");
++    nanocbor_put_bstr(&enc, msg->body_protected, msg->body_protected_len);
++    nanocbor_put_bstr(&enc, (const uint8_t *)"", 0);
++    *written = nanocbor_encoded_len(&enc);
++    return *written <= out_len ? 0 : -1;
++}
++
++static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
++{
++    int ret;
++    uint8_t scalar[X25519_KEYSIZE];
++    uint8_t shared[X25519_KEYSIZE];
++    uint8_t info[64];
++    size_t info_len;
++    uint8_t acc = 0;
++
++    if (_build_kdf_context(msg, info, sizeof(info), &info_len) < 0) {
++        return -1;
++    }
++
++    /* both the c25519 pkg and the host's `cryptography` library use RFC 7748
++     * little-endian raw keys, so no byte-order conversion is needed;
++     * c25519_prepare applies the RFC 7748 scalar clamping that
++     * X25519PrivateKey.exchange() performs implicitly */
++    memcpy(scalar, suit_enc_seckey, sizeof(scalar));
++    c25519_prepare(scalar);
++    c25519_smult(shared, msg->ephemeral_pub, scalar);
++    memset(scalar, 0, sizeof(scalar));
++
++    /* RFC 7748: reject the all-zero shared secret (small-order ephemeral
++     * key); `cryptography` raises on this condition too */
++    for (unsigned i = 0; i < sizeof(shared); i++) {
++        acc |= shared[i];
++    }
++    if (acc == 0) {
++        memset(shared, 0, sizeof(shared));
++        return -1;
++    }
++
++    ret = wc_HKDF(WC_SHA256, shared, sizeof(shared), NULL, 0,
++                  info, (word32)info_len,
++                  cek, CHACHA20_POLY1305_AEAD_KEYSIZE);
++
++    memset(shared, 0, sizeof(shared));
++    return ret;
++}
++
++int suit_manifest_decrypt(uint8_t *buf, size_t size,
++                          const uint8_t **plaintext, size_t *plaintext_len)
++{
++    cose_encrypt_msg_t msg;
++    byte cek[CHACHA20_POLY1305_AEAD_KEYSIZE];
++    uint8_t aad[64];
++    size_t aad_len;
++    int ret;
++
++    /* CBOR tag 96 = COSE_Encrypt; anything else is a plaintext manifest */
++    if (size < 2 || buf[0] != 0xd8 || buf[1] != COSE_TAG_ENCRYPT) {
++        *plaintext = buf;
++        *plaintext_len = size;
++        return SUIT_MANIFEST_ENCRYPT_PASSTHROUGH;
++    }
++
++    if (_parse_cose_encrypt(buf, size, &msg) < 0) {
++        LOG_INFO("suit: COSE_Encrypt parsing failed\n");
++        return -1;
++    }
++
++    ret = _derive_cek(&msg, cek);
++    if (ret != 0) {
++        LOG_INFO("suit: manifest CEK derivation failed: %d\n", ret);
++        return ret;
++    }
++
++    if (_build_enc_structure(&msg, aad, sizeof(aad), &aad_len) < 0) {
++        memset(cek, 0, sizeof(cek));
++        return -1;
++    }
++
++    /* in-place: ChaCha20 is a stream cipher, the tag is checked over the
++     * ciphertext before/while it is overwritten with plaintext */
++    ret = wc_ChaCha20Poly1305_Decrypt(cek, msg.nonce, aad, (word32)aad_len,
++                                      msg.ciphertext,
++                                      (word32)msg.ciphertext_len,
++                                      msg.auth_tag,
++                                      (byte *)msg.ciphertext);
++    memset(cek, 0, sizeof(cek));
++    if (ret != 0) {
++        LOG_INFO("suit: manifest decryption failed: %d\n", ret);
++        return ret;
++    }
++
++    *plaintext = msg.ciphertext;
++    *plaintext_len = msg.ciphertext_len;
++    return 0;
++}
+diff --git a/sys/suit/transport/worker.c b/sys/suit/transport/worker.c
+index 12eab4f9e6..2ac7d5f392 100644
+--- a/sys/suit/transport/worker.c
++++ b/sys/suit/transport/worker.c
+@@ -56,6 +56,10 @@
+ #include "suit/storage.h"
+ #endif
+ 
++#ifdef MODULE_SUIT_MANIFEST_ENCRYPT
++#include "suit/manifest_encrypt.h"
++#endif
++
+ #if defined(MODULE_PROGRESS_BAR)
+ #include "progress_bar.h"
+ #endif
+@@ -123,6 +127,30 @@ int suit_handle_url(const char *url)
+ 
+ int suit_handle_manifest_buf(const uint8_t *buffer, size_t size)
+ {
++#ifdef MODULE_SUIT_MANIFEST_ENCRYPT
++    /* A COSE_Encrypt-wrapped manifest is decrypted in place before parsing.
++     * All in-tree callers pass the writable static _manifest_buf, which
++     * makes the const cast safe; plaintext manifests pass through so
++     * legacy unencrypted updates keep working. */
++    const uint8_t *plaintext;
++    size_t plaintext_len;
++    int dres = suit_manifest_decrypt((uint8_t *)buffer, size,
++                                     &plaintext, &plaintext_len);
++    if (dres < 0) {
++        LOG_INFO("suit_worker: manifest decryption failed. res=%i\n", dres);
++        return dres;
++    }
++    if (dres == 0) {
++        LOG_INFO("suit_worker: manifest decrypted (%" PRIuSIZE " bytes)\n",
++                 plaintext_len);
++    }
++    else {
++        LOG_INFO("suit_worker: manifest not encrypted, passing through\n");
++    }
++    buffer = plaintext;
++    size = plaintext_len;
++#endif
++
+     suit_manifest_t manifest;
+     memset(&manifest, 0, sizeof(manifest));
+ 

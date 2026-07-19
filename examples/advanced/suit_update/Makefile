@@ -55,17 +55,35 @@ ifneq (,$(filter ml-dsa-%,$(SUIT_KEY_ALGO)))
   # level: signature + ~530B envelope overhead, rounded up, while saving
   # RAM over rounder values on 32KB-RAM boards.
   ifeq (ml-dsa-44,$(SUIT_KEY_ALGO))
-    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=3072
+    SUIT_MANIFEST_BUFSIZE = 3072
   else ifeq (ml-dsa-87,$(SUIT_KEY_ALGO))
-    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=5376
+    SUIT_MANIFEST_BUFSIZE = 5376
   else
-    CFLAGS += -DSUIT_MANIFEST_BUFSIZE=3840
+    SUIT_MANIFEST_BUFSIZE = 3840
   endif
   # The ML-DSA verify work state lives in a static MlDsaKey (see
   # pkg/libcose's wolfcrypt_mldsa.c backend), not on the worker stack, so
   # the default 6KB stack suffices for the verify itself; shrink it to 4KB
   # to fit the ~10KB (ML-DSA-65) static key state within a 32KB RAM budget.
   CFLAGS += -DSUIT_WORKER_STACKSIZE=4096
+else
+  SUIT_MANIFEST_BUFSIZE = 640
+endif
+
+# Manifest confidentiality: on by default, opt out with
+# SUIT_MANIFEST_ENCRYPT=0 (module selection must happen here, before
+# dependency resolution; key handling lives in makefiles/suit.base.inc.mk,
+# workflow in MANIFEST_ENCRYPTION_PLAN.md). The COSE_Encrypt wrapper adds
+# ~130B to the manifest (32B ephemeral key + 12B nonce + 16B tag + CBOR
+# framing), so grow the fetch buffer accordingly.
+SUIT_MANIFEST_ENCRYPT ?= 1
+ifeq (1,$(SUIT_MANIFEST_ENCRYPT))
+  USEMODULE += suit_manifest_encrypt
+  SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 128)
+endif
+
+ifneq (640,$(SUIT_MANIFEST_BUFSIZE))
+  CFLAGS += -DSUIT_MANIFEST_BUFSIZE=$(SUIT_MANIFEST_BUFSIZE)
 endif
 
 # enable VFS transport (only works on boards with external storage)

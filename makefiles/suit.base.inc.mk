@@ -107,3 +107,35 @@ $(SUIT_PUB_HDR): $(SUIT_PUBS) FORCE | $(CLEAN)
 		'$(LAZYSPONGE)' $(LAZYSPONGE_FLAGS) '$@'
 
 suit/genkey: $(SUIT_SEC)
+
+#
+# SUIT manifest encryption (confidentiality) - see
+# examples/advanced/suit_update/MANIFEST_ENCRYPTION_PLAN.md.
+#
+# On by default; opt out with SUIT_MANIFEST_ENCRYPT=0. Like the ML-DSA
+# modules, the suit_manifest_encrypt module itself must be selected in the
+# app Makefile (this file is included after dependency resolution). Here we
+# manage the device's static X25519 keypair and embed its private key into
+# the firmware via a generated header (prototype-grade key storage: the key
+# ends up in the image).
+export SUIT_MANIFEST_ENCRYPT ?= 1
+
+ifneq (,$(filter suit_manifest_encrypt,$(USEMODULE)))
+  SUIT_ENC_KEY ?= device_x25519
+  SUIT_ENC_SEC ?= $(SUIT_KEY_DIR)/$(SUIT_ENC_KEY).pem
+  SUIT_ENC_HDR = $(SUIT_PUB_HDR_DIR)suit_enc_seckey.h
+  BUILDDEPS += $(SUIT_ENC_HDR)
+
+  $(SUIT_ENC_SEC): | $(CLEAN)
+	$(Q)echo suit: generating manifest-encryption key in $(SUIT_KEY_DIR)
+	$(Q)mkdir -p $(SUIT_KEY_DIR)
+	$(Q)openssl genpkey -algorithm X25519 -out $@
+
+  # FORCE for the same key-switching reason as SUIT_PUB_HDR above
+  $(SUIT_ENC_HDR): $(SUIT_ENC_SEC) FORCE | $(CLEAN)
+	$(Q)mkdir -p $(SUIT_PUB_HDR_DIR)
+	$(Q)$(RIOTBASE)/dist/tools/suit/enckey_to_header.py $< | \
+		'$(LAZYSPONGE)' $(LAZYSPONGE_FLAGS) '$@'
+
+suit/genenckey: $(SUIT_ENC_SEC)
+endif

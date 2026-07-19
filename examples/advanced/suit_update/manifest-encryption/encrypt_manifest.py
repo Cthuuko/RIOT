@@ -60,6 +60,11 @@ def parse_arguments():
                              'a built-in test message is used if omitted')
     parser.add_argument('--output', '-o', default="manifest.cose",
                         help='Encrypted COSE_Encrypt output file')
+    parser.add_argument('--key', '-k', default=DEVICE_KEY_FILE,
+                        help='Device X25519 private key PEM (e.g. the '
+                             'SUIT_ENC_SEC key the firmware was built with, '
+                             'default: ~/.local/share/RIOT/keys/'
+                             'device_x25519.pem); generated if missing')
     return parser.parse_args()
 
 
@@ -79,16 +84,16 @@ def format_byte_array(name, data):
     return "\n".join(lines)
 
 
-def device_keypair():
+def device_keypair(key_file):
     """Load the device's static X25519 key, generating it on first run."""
-    if os.path.exists(DEVICE_KEY_FILE):
-        with open(DEVICE_KEY_FILE, "rb") as f:
+    if os.path.exists(key_file):
+        with open(key_file, "rb") as f:
             private_key = serialization.load_pem_private_key(f.read(), None)
-        print(f"Loaded device key from {DEVICE_KEY_FILE}")
+        print(f"Loaded device key from {key_file}")
         return private_key
 
     private_key = X25519PrivateKey.generate()
-    write_file(DEVICE_KEY_FILE, private_key.private_bytes(
+    write_file(key_file, private_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption()))
@@ -98,7 +103,7 @@ def device_keypair():
         "device_seckey", private_key.private_bytes_raw()))
     write_file("device_pubkey.h", format_byte_array(
         "device_pubkey", private_key.public_key().public_bytes_raw()))
-    print(f"Generated device key: {DEVICE_KEY_FILE}, "
+    print(f"Generated device key: {key_file}, "
           "device_seckey.h, device_pubkey.h")
     return private_key
 
@@ -170,7 +175,7 @@ def main(args):
     print("SUIT manifest encryption (X25519 + HKDF-SHA256 + "
           "ChaCha20-Poly1305) - START")
 
-    device_key = device_keypair()
+    device_key = device_keypair(args.key)
 
     if args.input:
         with open(args.input, "rb") as f:
