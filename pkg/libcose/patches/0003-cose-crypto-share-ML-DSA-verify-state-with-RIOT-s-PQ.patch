@@ -1,0 +1,45 @@
+From a6d7a6bce0dc5d563521113ea70f08ad7a4681a0 Mon Sep 17 00:00:00 2001
+From: Miguel Arcilla <miguelkristopharcilla@gmail.com>
+Date: Sun, 19 Jul 2026 16:58:31 +0200
+Subject: [PATCH] cose/crypto: share ML-DSA verify state with RIOT's PQ scratch
+ union
+
+When RIOT compiles both the ML-DSA verify backend and ML-KEM SUIT
+manifest decryption, the two multi-KB static states never coexist in
+time - overlay them via RIOT's suit_pq_scratch union to save
+sizeof(MlKemKey) of .bss on 32KB-RAM targets.
+---
+ src/crypt/wolfcrypt_mldsa.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/crypt/wolfcrypt_mldsa.c b/src/crypt/wolfcrypt_mldsa.c
+index 41ffd18..22315ac 100644
+--- a/src/crypt/wolfcrypt_mldsa.c
++++ b/src/crypt/wolfcrypt_mldsa.c
+@@ -20,6 +20,7 @@
+ #include "cose_defines.h"
+ #include "cose/crypto.h"
+ #include "cose/crypto/wolfcrypt_mldsa.h"
++#include "suit/pq_scratch.h"
+ 
+ #if defined(HAVE_ALGO_MLDSA44) || defined(HAVE_ALGO_MLDSA65) || \
+     defined(HAVE_ALGO_MLDSA87)
+@@ -31,7 +32,15 @@
+  * genuinely valid signatures fail verification). Static is safe: SUIT
+  * verification only ever runs on the single suit_worker thread. Its size
+  * follows the largest ML-DSA parameter set compiled into wolfCrypt. */
++#ifdef SUIT_PQ_SCRATCH_SHARED
++/* Overlay the verify state onto RIOT's shared PQ scratch union (also used
++ * by ML-KEM SUIT-manifest decryption, which never runs concurrently with
++ * signature verification) - recovers sizeof(MlKemKey) of .bss on
++ * 32KB-RAM boards. See RIOT's sys/include/suit/pq_scratch.h. */
++#define _mldsa_key (suit_pq_scratch.mldsa)
++#else
+ static MlDsaKey _mldsa_key;
++#endif
+ 
+ static int _verify_mldsa(int category, word32 pubkey_len,
+                          const cose_key_t *key, const uint8_t *sign,
+-- 
+2.34.1
+

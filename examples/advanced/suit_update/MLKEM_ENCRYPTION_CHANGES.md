@@ -7,9 +7,11 @@ with a **post-quantum key-establishment alternative**: ML-KEM-768/1024
 default). Status: verified end-to-end on `native64` (Ed25519 signing +
 ML-KEM-768 encryption); samr21-xpro **link-level feasibility measured for
 all 12 signing × encryption combos** (table below), hardware E2E pending.
-The combined diff of the ML-KEM changes is kept as
-`mlkem-encryption-implementation.patch` in this directory (same convention
-as `manifest-encryption-implementation.patch` for the X25519 feature).
+`mlkem-encryption-implementation.patch` in this directory holds the diff
+of whatever ML-KEM work is not yet committed at regeneration time (same
+convention as `manifest-encryption-implementation.patch` for the X25519
+feature); currently that is the RAM-rework delta (pq_scratch union, exact
+buffer, doc updates).
 
 ## What changes vs. the X25519 variant
 
@@ -66,19 +68,43 @@ ML-KEM), triggered automatically by `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-%`.
 | Signing \ Encryption | X25519 | ML-KEM-768 | ML-KEM-1024 |
 |---|---|---|---|
 | Ed25519 | ✅ 102,492 t / 21,160 RAM (11.6 KB spare) | ✅ 114,144 t / 26,264 RAM (6.5 KB spare) | ✅ 113,952 t / 27,768 RAM (5.0 KB spare) |
-| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (1.9 KB spare) | ❌ overflow 3,228 B | ❌ overflow 4,732 B |
-| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (88 B spare) | ❌ overflow 5,020 B | ❌ overflow 6,524 B |
+| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (1.9 KB spare) | ✅ **120,292 t / 31,608 RAM (1,160 B spare)** — after the RAM rework below (pre-rework: ❌ overflow 3,228 B) | ✅ 120,132 t / 32,472 RAM (296 B spare — links, but treat as experimental) after the rework (pre: ❌ 4,732 B) |
+| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (88 B spare) | ❌ overflow ~5 KB even with the rework's ~4.4 KB | ❌ overflow 6,524 B |
 | ML-DSA-87 | ❌ overflow 3,756 B | ❌ overflow 8,860 B | ❌ overflow 10,364 B |
 
-Takeaways: **Ed25519 + ML-KEM-768/1024 fit with kilobytes to spare** (the
-recommended PQ-confidentiality demos); the full-PQ goal
-**ML-DSA-44 + ML-KEM-768 misses by only 3,228 B** — candidate mitigations:
-union the never-concurrent ML-DSA verify state and `MlKemKey` into one
-static workspace, shrink GNRC pktbuf, exact buffer values. ML-DSA-65
-survives only with X25519 (88 B spare — matching
-`MLDSA_HARDWARE_FIXES.md`'s ~216 B baseline minus the +128 B buffer pad).
-Flash never binds (≤116.7 KB text). Link-level verdicts only — hardware
-E2E for the fitting combos is plan Step 5b's remaining half.
+Takeaways: **Ed25519 + ML-KEM-768/1024 fit with kilobytes to spare**, and
+after the RAM rework the **full-PQ combo ML-DSA-44 + ML-KEM-768 fits with
+1,160 B spare** (ML-DSA-44 + ML-KEM-1024 links too, at a thin 296 B).
+ML-DSA-65 survives only with X25519 (88 B spare); ML-DSA-87 remains a
+dead end. Flash never binds (≤120.3 KB text). Link-level verdicts —
+hardware E2E for the fitting combos is plan Step 5b's remaining half.
+
+## RAM rework: fitting ML-DSA-44 + ML-KEM-768 (recovered 4,388 B)
+
+Two levers (a third — `CONFIG_GNRC_PKTBUF_SIZE=4096`, +2 KB — is wired as
+a commented-out reserve in the app Makefile):
+
+1. **`suit_pq_scratch` union** (`sys/include/suit/pq_scratch.h`, definition
+   in `sys/suit/encrypt/decrypt.c`, consumed by pkg/libcose patch
+   `0003-cose-crypto-share-ML-DSA-verify-state-with-RIOT-s-PQ.patch`): the
+   static ML-DSA verify state and the static `MlKemKey` are **never live
+   concurrently** (decryption completes, key freed, before `suit_parse()`
+   starts signature verification — one worker thread), so they share one
+   allocation. Active only when both wolfcrypt modules are compiled
+   (`SUIT_PQ_SCRATCH_SHARED`); every single-scheme build keeps its own
+   private static and is **byte-identical** to before (verified: mldsa44/65
+   + x25519, ed25519 + ml-kem-768, mldsa44 with encryption off).
+   Measured: union = 9,344 B = `sizeof(MlDsaKey)`; the ~4 KB `MlKemKey`
+   overlays for free.
+2. **Exact manifest buffer** for the combo: `SUIT_MANIFEST_BUFSIZE=3904`
+   (the encrypted ML-DSA-44 manifest measures exactly 3,776 B + 128 B
+   margin) instead of the additive 3072+1216 → +384 B.
+
+Functional verification on native64: **two consecutive** ML-DSA-44-signed,
+ML-KEM-768-encrypted updates in one process — each cycle exercises both
+union members back-to-back (decrypt writes the scratch, then verify
+overwrites it) — both ended in `suit_worker: update successful` with the
+payload installed; no state leakage between the overlaid users.
 
 ## Verification (native64, 2026-07-19)
 

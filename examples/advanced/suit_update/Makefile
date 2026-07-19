@@ -86,7 +86,16 @@ ifeq (1,$(SUIT_MANIFEST_ENCRYPT))
   ifneq (,$(filter ml-kem-%,$(SUIT_MANIFEST_ENCRYPT_ALGO)))
     USEMODULE += wolfcrypt_mlkem
     USEMODULE += wolfcrypt_mlkem$(subst ml-kem-,,$(SUIT_MANIFEST_ENCRYPT_ALGO))
-    ifeq (ml-kem-1024,$(SUIT_MANIFEST_ENCRYPT_ALGO))
+    ifeq (ml-dsa-44/ml-kem-768,$(SUIT_KEY_ALGO)/$(SUIT_MANIFEST_ENCRYPT_ALGO))
+      # The full-PQ combo is squeezed into samr21-xpro's 32KB RAM (together
+      # with the suit_pq_scratch union, see sys/include/suit/pq_scratch.h):
+      # exact measured need instead of the additive 3072+1216 - a 2632B
+      # ML-DSA-44 manifest + 1144B COSE_Encrypt/KEM overhead + 128B margin.
+      SUIT_MANIFEST_BUFSIZE := 3904
+      # Reserve lever if RAM gets tight again (e.g. bigger app): SUIT's 64B
+      # CoAP blocks don't need the default 6KB of pktbuf.
+      # CFLAGS += -DCONFIG_GNRC_PKTBUF_SIZE=4096
+    else ifeq (ml-kem-1024,$(SUIT_MANIFEST_ENCRYPT_ALGO))
       SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1696)
     else
       SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1216)

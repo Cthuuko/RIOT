@@ -68,3 +68,21 @@ collect2: error: ld returned 1 exit status
 make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
 
 MATRIX DONE
+
+########################################################################
+# Post pq_scratch-union + exact-buffer rework (2026-07-19, see
+# MLKEM_ENCRYPTION_CHANGES.md "RAM rework" section). Re-measured combos:
+########################################################################
+
+=== SIG=ml-dsa-44 ENC=ml-kem-768 (union + SUIT_MANIFEST_BUFSIZE=3904) ===
+   text	   data	    bss	    dec	    hex	filename
+ 120292	    260	  31348	 151900	  2515c	suit_update.elf   (RAM 31,608/32,768 -> 1,160 B spare; was overflow 3,228)
+ suit_pq_scratch union: 0x2480 = 9,344 B (= sizeof(MlDsaKey); MlKemKey overlaid free)
+
+=== SIG=ml-dsa-44 ENC=ml-kem-1024 (union, additive buffer) ===
+   text	   data	    bss	    dec	    hex	filename
+ 120132	    260	  32212	 152604	  2541c	suit_update.elf   (RAM 32,472/32,768 -> 296 B spare; was overflow 4,732)
+
+=== regressions (unchanged vs. pre-union matrix) ===
+ mldsa44+x25519: 116100/260/30628  | mldsa65+x25519: 116708/260/32420 (88 B spare)
+ ed25519+mlkem768: 114144/260/26004 | mldsa44 plain (encrypt=0): 105412/260/30500

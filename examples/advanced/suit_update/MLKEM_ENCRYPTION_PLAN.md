@@ -83,18 +83,17 @@ Per-combo added RAM when swapping X25519 → ML-KEM (all static/.bss unless note
 | Signing \ Encryption | X25519 | ML-KEM-768 | ML-KEM-1024 |
 |---|---|---|---|
 | Ed25519 | ✅ 102,492 t / 21,160 RAM (**11.6 KB spare**) | ✅ 114,144 t / 26,264 RAM (**6.5 KB spare**) | ✅ 113,952 t / 27,768 RAM (**5.0 KB spare**) |
-| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (**1.9 KB spare**) | ❌ overflow **3,228 B** | ❌ overflow 4,732 B |
-| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (**88 B spare** — exactly the predicted ≲90 B) | ❌ overflow 5,020 B | ❌ overflow 6,524 B |
+| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (**1.9 KB spare**) | ✅ **31,608 RAM (1,160 B spare)** after the pq_scratch rework (was ❌ 3,228 B over) | ✅ 32,472 RAM (296 B spare, experimental) after the rework (was ❌ 4,732 B over) |
+| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (**88 B spare** — exactly the predicted ≲90 B) | ❌ still ~0.6 KB+ over even post-rework | ❌ overflow 6,524 B |
 | ML-DSA-87 | ❌ overflow 3,756 B | ❌ overflow 8,860 B | ❌ overflow 10,364 B |
 
 Conclusions:
 
-- **Ed25519 + ML-KEM-768/1024 both fit comfortably** — classical-signature + PQ-confidentiality works on this board at link level; hardware E2E is the remaining check. (Curious but consistent artifact: the 1024 build's text is marginally *smaller* than 768's — parameter-set-specific code paths.)
-- **The full-PQ combo (ML-DSA-44 + ML-KEM-768) misses by 3,228 B** — the closest failure. Mitigation candidates, in order: share one static crypto workspace between the never-concurrent ML-DSA verify state (~10 KB class) and `MlKemKey` (union), shrink GNRC pktbuf, exact buffer values. 3.2 KB is plausibly recoverable via the union alone.
-- ML-DSA-65/87 + any KEM, and ML-DSA-87 + anything, are confirmed dead ends on 32 KB RAM (documented like Example D).
-- Flash is never the binding constraint (max 116.7 KB text).
+- **Ed25519 + ML-KEM-768/1024 both fit comfortably**; after the RAM rework (see `MLKEM_ENCRYPTION_CHANGES.md` "RAM rework": `suit_pq_scratch` union overlaying the never-concurrent ML-DSA verify state and `MlKemKey` [recovers ~4 KB], + exact 3,904 B manifest buffer [+384 B]) the **full-PQ combo ML-DSA-44 + ML-KEM-768 fits with 1,160 B spare** — verified by double-update E2E on native64. The reserve lever (`CONFIG_GNRC_PKTBUF_SIZE=4096`, +2 KB) stays commented out in the app Makefile.
+- ML-DSA-65/87 + any KEM remain dead ends on 32 KB RAM (documented like Example D).
+- Flash is never the binding constraint (max 120.3 KB text).
 
-Raw ld/size output for all 12 combos: see `MLKEM_ENCRYPTION_CHANGES.md`.
+Raw ld/size output (original 12 + post-rework re-measurements): `mlkem-feasibility-matrix-raw.txt`, summarized in `MLKEM_ENCRYPTION_CHANGES.md`.
 
 ## Later steps (outline — not this round)
 

@@ -226,7 +226,11 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   dispatch; private-use COSE algs -70768/-70769; device key = 64B FIPS 203
   seed; needs OpenSSL 3.5+ and the local wolfssl checkout, auto-selected).
   Verified E2E on native64. samr21 (measured): Ed25519+ML-KEM-768/1024
-  **fit** (6.5/5.0KB RAM spare); ML-DSA-44+ML-KEM-768 misses by 3,228B;
+  **fit** (6.5/5.0KB RAM spare); **the full-PQ combo ML-DSA-44+ML-KEM-768
+  also fits (1,160B spare)** thanks to the `suit_pq_scratch` union
+  (sys/include/suit/pq_scratch.h + libcose patch 0003: the never-concurrent
+  ML-DSA verify state and MlKemKey share one static allocation) plus an
+  exact 3,904B manifest buffer; ML-DSA-44+ML-KEM-1024 links at a thin 296B;
   ML-DSA-65/87+KEM don't fit. Gotcha: tampered KEM ct fails via FIPS 203
   implicit rejection (AEAD tag error, never a decaps error). See
   `MLKEM_ENCRYPTION_PLAN.md` / `MLKEM_ENCRYPTION_CHANGES.md`.

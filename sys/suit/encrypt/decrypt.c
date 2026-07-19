@@ -44,6 +44,7 @@
  * COSE alg IDs (no IANA registration for ML-KEM yet), matching the
  * manifest-encryption-mlkem host tooling. */
 #include <wolfssl/wolfcrypt/wc_mlkem.h>
+#include "suit/pq_scratch.h"
 #if defined(MODULE_WOLFCRYPT_MLKEM1024)
     #define SUIT_MLKEM_TYPE     WC_ML_KEM_1024
     #define COSE_ALG_RECIPIENT  (-70769)
@@ -272,12 +273,23 @@ static int _build_enc_structure(const cose_encrypt_msg_t *msg,
 }
 
 #ifdef MODULE_WOLFCRYPT_MLKEM
+#ifdef SUIT_PQ_SCRATCH_SHARED
+/* overlay the decapsulation state onto the ML-DSA verify state — they are
+ * never live at the same time (decrypt completes before verify starts on
+ * the same worker thread), and the sharing recovers sizeof(MlKemKey) of
+ * .bss on 32KB-RAM boards; see sys/include/suit/pq_scratch.h */
+union suit_pq_scratch suit_pq_scratch;
+#define _mlkem_state (suit_pq_scratch.mlkem)
+#else
+/* multi-KB struct: keep off the 4KB worker stack (see the ML-DSA
+ * .bss-corruption lesson in MLDSA_HARDWARE_FIXES.md) */
+static MlKemKey _mlkem_state;
+#endif
+
 static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
 {
     int ret;
-    /* multi-KB struct: keep off the 4KB worker stack (see the ML-DSA
-     * .bss-corruption lesson in MLDSA_HARDWARE_FIXES.md) */
-    static MlKemKey key;
+    MlKemKey *key = &_mlkem_state;
     byte shared[WC_ML_KEM_SS_SZ];
     uint8_t info[64];
     size_t info_len;
@@ -286,7 +298,7 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
         return -1;
     }
 
-    ret = wc_MlKemKey_Init(&key, SUIT_MLKEM_TYPE, NULL, INVALID_DEVID);
+    ret = wc_MlKemKey_Init(key, SUIT_MLKEM_TYPE, NULL, INVALID_DEVID);
     if (ret != 0) {
         return ret;
     }
@@ -294,10 +306,10 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
      * expansion the host's `cryptography` performs from private_bytes_raw().
      * A tampered KEM ciphertext is not an error here: FIPS 203 implicit
      * rejection yields a different shared secret, failing the AEAD tag. */
-    ret = wc_MlKemKey_MakeKeyWithRandom(&key, suit_enc_seckey,
+    ret = wc_MlKemKey_MakeKeyWithRandom(key, suit_enc_seckey,
                                         sizeof(suit_enc_seckey));
     if (ret == 0) {
-        ret = wc_MlKemKey_Decapsulate(&key, shared, msg->kem_ct,
+        ret = wc_MlKemKey_Decapsulate(key, shared, msg->kem_ct,
                                       (word32)msg->kem_ct_len);
     }
     if (ret == 0) {
@@ -307,7 +319,7 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
     }
 
     memset(shared, 0, sizeof(shared));
-    wc_MlKemKey_Free(&key);
+    wc_MlKemKey_Free(key);
     return ret;
 }
 #else
