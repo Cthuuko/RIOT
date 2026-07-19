@@ -515,14 +515,23 @@ Reflashing after the device key already exists reuses it.
 
 Publish exactly as in A.7/B.7/C.7 (same variables, fresh
 `APP_VER=$(date +%s)`), then encrypt the published manifest **for this
-board's device key** (published manifests land in `coaproot/` as
-`riot.suit.$APP_VER.bin` / `riot.suit.latest.bin`):
+board's device key**. Publishing does not drop files at the `coaproot/`
+root — `suit/publish` copies into
+`$(SUIT_COAP_FSROOT)/$(SUIT_COAP_BASEPATH)` =
+`coaproot/fw/suit_update/samr21-xpro/` (as the `published ... as coap://...`
+lines in its output show), so encrypt in place there:
 
 ```sh
 python3 examples/advanced/suit_update/manifest-encryption/encrypt_manifest.py \
   --key $SUIT_KEY_DIR/device_x25519.pem \
-  -o coaproot/riot.suit.enc coaproot/riot.suit.latest.bin
+  -o coaproot/fw/suit_update/samr21-xpro/riot.suit.enc \
+  coaproot/fw/suit_update/samr21-xpro/riot.suit.latest.bin
 ```
+
+Keep the output name exactly `riot.suit.enc`: the notify URL becomes
+`coap://[2001:db8::1]/fw/suit_update/samr21-xpro/riot.suit.enc` — 61 of
+the device's 64 URL-buffer chars. A versioned name
+(`riot.suit.<epoch>.enc`) would silently truncate.
 
 Expect `Self-test decrypt: OK` and a ~92-byte overhead report. (The tool
 also drops `encrypted.h`/`plaintext.h`/`device_*.h` helper headers in the
@@ -538,13 +547,15 @@ SUIT_NOTIFY_MANIFEST=riot.suit.enc \
   BOARD=samr21-xpro make -C examples/advanced/suit_update suit/notify
 ```
 
-Alternatively, trigger directly from the board's shell (E.6 terminal):
+Alternatively, trigger directly from the board's shell (E.6 terminal),
+using the full published path:
 
 ```
-> suit fetch coap://[2001:db8::1]/riot.suit.enc
+> suit fetch coap://[2001:db8::1]/fw/suit_update/samr21-xpro/riot.suit.enc
 ```
 
-(Keep the URL under 64 chars — the worker's URL buffer truncates silently.)
+(61 chars — right under the worker's 64-char URL buffer, which truncates
+silently; that's also why E.7 insists on the short `riot.suit.enc` name.)
 
 ## E.9 — What "verified" looks like
 
