@@ -52,4 +52,10 @@ ifneq (,$(filter wolfcrypt_mldsa,$(USEMODULE)))
   SRC += wc_mldsa.c
 endif
 
+# same for ML-KEM: two sources behind the one "wolfcrypt_mlkem" pseudomodule
+ifneq (,$(filter wolfcrypt_mlkem,$(USEMODULE)))
+  SRC += wc_mlkem.c
+  SRC += wc_mlkem_poly.c
+endif
+
 include $(RIOTBASE)/Makefile.base

@@ -17,10 +17,11 @@ Verified preconditions (no wolfssl rebuild needed this time):
 
 - [x] Step 0: persist this plan as `examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md` (2026-07-19)
 - [x] Step 1: standalone interop example `examples/advanced/suit_update/manifest-encryption-mlkem/` (2026-07-19), both levels verified: seed-expansion interop check OK (wolfCrypt `MakeKeyWithRandom` ≡ cryptography `from_seed_bytes`), Python-encrypted → wolfCrypt-decrypted MATCH, tampered AEAD ct rejected (-213), tampered KEM ct rejected via FIPS 203 implicit rejection (wrong ss → wrong CEK → tag error, **no** decapsulation error code), 3.7 KB payloads OK. Measured container overheads: **1144 B (768) / 1624 B (1024)**. Gotcha found: the per-level Python runs share header filenames — the script now always rewrites `device_*.h`/`encrypted.h` so a stale other-level header can't poison the C build (symptom: pubkey-interop MISMATCH / `DecodePublicKey` BUFFER_E -132).
-- [ ] Step 2: device integration — algorithm dispatch in `sys/suit/encrypt/decrypt.c`, `wolfcrypt_mlkem` pseudomodule, `SUIT_MANIFEST_ENCRYPT_ALGO=x25519|ml-kem-768|ml-kem-1024` (default x25519)
-- [ ] Step 3: host tooling — ML-KEM device-key gen (`openssl genpkey -algorithm ml-kem-*` seed-only, extend `enckey_to_header.py`)
-- [ ] Step 4: buffer sizing — container overhead ~1.2 KB (768) / ~1.7 KB (1024)
-- [ ] Step 5: E2E native64, then the samr21-xpro **feasibility matrix** (all signing × KEM combinations, see section below): link-time RAM verdict for every combo + hardware E2E for the ones that fit
+- [x] Step 2: device integration (2026-07-19) — **compile-time** algorithm dispatch in `sys/suit/encrypt/decrypt.c` (`#ifdef MODULE_WOLFCRYPT_MLKEM` selects the KEM recipient path; the received recipient alg ID is validated against the built-in one, so a container for the wrong scheme is rejected with a clear log line). New `wolfcrypt_mlkem` pseudomodule: `wc_mlkem.c`+`wc_mlkem_poly.c` special-cased in `pkg/wolfssl/Makefile.wolfcrypt`, SHA3 dep in `pkg/wolfssl/Makefile.dep`, `user_settings.h` gates (`WOLFSSL_HAVE_MLKEM`, SHAKE, `WOLFSSL_MLKEM_SMALL`, per-level `WOLFSSL_NO_ML_KEM_*` exclusions via `wolfcrypt_mlkem768/1024`). `PKG_SOURCE_LOCAL_WOLFSSL` now also triggers on `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-%` (`makefiles/suit.base.inc.mk`).
+- [x] Step 3: host tooling (2026-07-19) — `SUIT_MANIFEST_ENCRYPT_ALGO`-aware device-key gen in `suit.base.inc.mk` (`openssl genpkey -algorithm ml-kem-*` with seed-only provparam; key name `device_mlkem768/1024`), `enckey_to_header.py` accepts X25519 + ML-KEM (emits the 64-byte seed); manifest encryption via `manifest-encryption-mlkem/encrypt_manifest.py --key ... -o ...` after `suit-tool sign` (manual, like the X25519 flow)
+- [x] Step 4: buffer sizing (2026-07-19) — app Makefile adds +1216 B (768) / +1696 B (1024) instead of +128 B when a KEM algo is selected
+- [x] Step 5a: E2E native64 (2026-07-19, Ed25519 + ML-KEM-768): encrypted manifest (1416 B) → `manifest decrypted (272 bytes)` → signature verified → payload installed; tampered container rejected (-213); an X25519 container on ML-KEM firmware rejected with `recipient alg -25 != built-in -70768`; plaintext manifest passes through.
+- [x] Step 5b (link-time part, 2026-07-19): samr21-xpro **feasibility matrix measured for all 12 combos** — see the table below. Fits: Ed25519 × {X25519, ML-KEM-768, ML-KEM-1024}, ML-DSA-44 × X25519, ML-DSA-65 × X25519 (88 B spare). Everything else overflows RAM. Remaining: hardware E2E on the fitting combos (start Ed25519 + ML-KEM-768), and optionally the workspace-union mitigation to chase ML-DSA-44 + ML-KEM-768 (misses by 3,228 B).
 - [ ] Step 6: docs (MLKEM_ENCRYPTION_CHANGES.md, NATIVE_SETUP/SAMR21 updates, CLAUDE.md) + refresh implementation patch
 
 ## Design
@@ -77,16 +78,23 @@ Per-combo added RAM when swapping X25519 → ML-KEM (all static/.bss unless note
 - **`MlKemKey` state**: multi-KB (k=3: ≈3–4 KB, k=4: ≈4–5 KB with `WOLFSSL_MLKEM_SMALL`); per the ML-DSA lesson it must be `static`, so it lands in `.bss`. Decapsulation stack on top (SMALL variant, estimated 1–2 KB — must fit or grow the 4 KB worker stack).
 - The 64-byte seed key replaces the 32-byte X25519 key in flash (negligible).
 
-Expected verdicts (to be **replaced by measured link results** in Step 5 — a `BOARD=samr21-xpro make` per combo gives the RAM verdict at link time, no hardware needed; hardware E2E only for combos that link with margin):
+**MEASURED link results (2026-07-19, `BOARD=samr21-xpro make clean all` per combo; RAM = data+bss of `suit_update.elf` against 32,768 B; ❌ = `.bss` overflow of `slot0.elf` by the stated bytes):**
 
-| Signing \ Encryption | X25519 (measured/expected) | ML-KEM-768 | ML-KEM-1024 |
+| Signing \ Encryption | X25519 | ML-KEM-768 | ML-KEM-1024 |
 |---|---|---|---|
-| Ed25519 | works on native64; hardware pending (plan 5b), ample margin expected | **primary PQ target** — plausible (~5–6 KB added on a roomy baseline) | borderline — measure |
-| ML-DSA-44 | plausible (C had headroom) | borderline — the full-PQ goal (PQ signature + PQ KEM); measure first | unlikely |
-| ML-DSA-65 | at risk (≲90 B slack) | **won't fit** (needs ≥4 KB more against 216 B) | won't fit |
-| ML-DSA-87 | already overflows by 3.6 KB unencrypted | won't fit | won't fit |
+| Ed25519 | ✅ 102,492 t / 21,160 RAM (**11.6 KB spare**) | ✅ 114,144 t / 26,264 RAM (**6.5 KB spare**) | ✅ 113,952 t / 27,768 RAM (**5.0 KB spare**) |
+| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (**1.9 KB spare**) | ❌ overflow **3,228 B** | ❌ overflow 4,732 B |
+| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (**88 B spare** — exactly the predicted ≲90 B) | ❌ overflow 5,020 B | ❌ overflow 6,524 B |
+| ML-DSA-87 | ❌ overflow 3,756 B | ❌ overflow 8,860 B | ❌ overflow 10,364 B |
 
-Step 5 deliverable: this table refreshed with actual `text/data/bss` (or overflow deltas) for **all 12 combos**, recorded in `MLKEM_ENCRYPTION_CHANGES.md` — same methodology as Example D's documented dead end: a combo that doesn't link is still a thesis result. Mitigations to try for the ML-DSA-44 + ML-KEM-768 goal if it overflows: share one static crypto workspace between the (never concurrent) verify and decrypt paths via a union, shrink GNRC pktbuf, and the buffer-sizing trick of exact (non-round) values.
+Conclusions:
+
+- **Ed25519 + ML-KEM-768/1024 both fit comfortably** — classical-signature + PQ-confidentiality works on this board at link level; hardware E2E is the remaining check. (Curious but consistent artifact: the 1024 build's text is marginally *smaller* than 768's — parameter-set-specific code paths.)
+- **The full-PQ combo (ML-DSA-44 + ML-KEM-768) misses by 3,228 B** — the closest failure. Mitigation candidates, in order: share one static crypto workspace between the never-concurrent ML-DSA verify state (~10 KB class) and `MlKemKey` (union), shrink GNRC pktbuf, exact buffer values. 3.2 KB is plausibly recoverable via the union alone.
+- ML-DSA-65/87 + any KEM, and ML-DSA-87 + anything, are confirmed dead ends on 32 KB RAM (documented like Example D).
+- Flash is never the binding constraint (max 116.7 KB text).
+
+Raw ld/size output for all 12 combos: see `MLKEM_ENCRYPTION_CHANGES.md`.
 
 ## Later steps (outline — not this round)
 

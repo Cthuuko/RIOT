@@ -1,0 +1,697 @@
+diff --git a/dist/tools/suit/enckey_to_header.py b/dist/tools/suit/enckey_to_header.py
+index ff5dce2c2d..ad57c517b2 100755
+--- a/dist/tools/suit/enckey_to_header.py
++++ b/dist/tools/suit/enckey_to_header.py
+@@ -8,30 +8,36 @@
+ # directory for more details.
+ #
+ 
+-"""Emit a C header defining `suit_enc_seckey[32]` from an X25519 private key
+-PEM file: the device's static key for SUIT manifest decryption (COSE
+-ECDH-ES + HKDF-256). Raw bytes are RFC 7748 little-endian, matching the
+-EC25519_LITTLE_ENDIAN imports in sys/suit/encrypt/decrypt.c.
++"""Emit a C header defining `suit_enc_seckey[N]` from the device's private
++key PEM for SUIT manifest decryption: X25519 (32 raw bytes, RFC 7748
++little-endian, matching sys/suit/encrypt/decrypt.c's c25519 usage) or
++ML-KEM-768/1024 (the 64-byte FIPS 203 d||z seed, re-expanded on-device via
++wc_MlKemKey_MakeKeyWithRandom).
+ 
+ SECURITY: the private key ends up in the firmware image; prototype-grade
+ key storage only."""
+ 
+ import sys
+ 
++from cryptography.hazmat.primitives.asymmetric import mlkem
+ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+ from cryptography.hazmat.primitives.serialization import load_pem_private_key
+ 
++SUPPORTED = (X25519PrivateKey,
++             mlkem.MLKEM768PrivateKey, mlkem.MLKEM1024PrivateKey)
++
+ 
+ def main():
+     if len(sys.argv) != 2:
+-        print("usage: enckey_to_header.py <x25519_private_key.pem>")
++        print("usage: enckey_to_header.py <private_key.pem>")
+         sys.exit(1)
+ 
+     with open(sys.argv[1], 'rb') as f:
+         seckey = load_pem_private_key(f.read(), None)
+ 
+-    if not isinstance(seckey, X25519PrivateKey):
+-        sys.exit("suit: SUIT_ENC_SEC must be an X25519 private key")
++    if not isinstance(seckey, SUPPORTED):
++        sys.exit("suit: SUIT_ENC_SEC must be an X25519 or ML-KEM-768/1024 "
++                 "private key")
+ 
+     raw = seckey.private_bytes_raw()
+     print(f"const uint8_t suit_enc_seckey[{len(raw)}] = {{")
+diff --git a/examples/advanced/suit_update/CLAUDE.md b/examples/advanced/suit_update/CLAUDE.md
+index 7a30f9a973..89f0ee19e7 100644
+--- a/examples/advanced/suit_update/CLAUDE.md
++++ b/examples/advanced/suit_update/CLAUDE.md
+@@ -37,6 +37,10 @@ board/driver code.
+ | `MANIFEST_ENCRYPTION_PLAN.md` | Manifest-encryption feature plan + status checklist — resume work from the first unchecked step |
+ | `MANIFEST_ENCRYPTION_CHANGES.md` | Manifest-encryption code-change summary: wire format, opt-out contract, per-file change list, verification results, gotchas |
+ | `manifest-encryption/` | Standalone host-only interop example (Python `cryptography` encrypt ↔ wolfCrypt decrypt); its `encrypt_manifest.py` doubles as the host-side manifest encryption tool |
++| `MLKEM_ENCRYPTION_PLAN.md` | Post-quantum (ML-KEM-768/1024) manifest-encryption plan + status checklist, incl. the **measured 12-combo samr21 feasibility matrix** |
++| `MLKEM_ENCRYPTION_CHANGES.md` | ML-KEM code-change summary: selection contract, per-file changes, matrix, native64 verification, gotchas |
++| `manifest-encryption-mlkem/` | ML-KEM standalone interop example (both levels via `--level`/`-DMLKEM_LEVEL`); its `encrypt_manifest.py --key` is the host-side ML-KEM encryption tool |
++| `mlkem-feasibility-matrix-raw.txt` | Raw `size`/ld output of the 12 signing × encryption samr21 builds |
+ | `native_steps.svg` | Diagram referenced by README.native.md |
+ | `tests-with-config/` | Automated test configs |
+ 
+@@ -217,6 +221,15 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
+   `MANIFEST_ENCRYPTION_CHANGES.md` (changes/gotchas),
+   `MANIFEST_ENCRYPTION_PLAN.md` (status), `manifest-encryption/README.md`
+   (wire format), `NATIVE_SETUP.md` steps 6b/9 (workflow).
++  **Post-quantum variant**: `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768|ml-kem-1024`
++  swaps the X25519 recipient for an ML-KEM encapsulation (compile-time
++  dispatch; private-use COSE algs -70768/-70769; device key = 64B FIPS 203
++  seed; needs OpenSSL 3.5+ and the local wolfssl checkout, auto-selected).
++  Verified E2E on native64. samr21 (measured): Ed25519+ML-KEM-768/1024
++  **fit** (6.5/5.0KB RAM spare); ML-DSA-44+ML-KEM-768 misses by 3,228B;
++  ML-DSA-65/87+KEM don't fit. Gotcha: tampered KEM ct fails via FIPS 203
++  implicit rejection (AEAD tag error, never a decaps error). See
++  `MLKEM_ENCRYPTION_PLAN.md` / `MLKEM_ENCRYPTION_CHANGES.md`.
+ - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
+   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
+ - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —
+diff --git a/examples/advanced/suit_update/MLKEM_ENCRYPTION_CHANGES.md b/examples/advanced/suit_update/MLKEM_ENCRYPTION_CHANGES.md
+new file mode 100644
+index 0000000000..de9cf20a86
+--- /dev/null
++++ b/examples/advanced/suit_update/MLKEM_ENCRYPTION_CHANGES.md
+@@ -0,0 +1,112 @@
++# ML-KEM manifest encryption — code changes summary
++
++Companion to `MLKEM_ENCRYPTION_PLAN.md` (plan + status checklist), extending
++the X25519 manifest-encryption feature (`MANIFEST_ENCRYPTION_CHANGES.md`)
++with a **post-quantum key-establishment alternative**: ML-KEM-768/1024
++(FIPS 203), selectable via `SUIT_MANIFEST_ENCRYPT_ALGO` (X25519 stays the
++default). Status: verified end-to-end on `native64` (Ed25519 signing +
++ML-KEM-768 encryption); samr21-xpro **link-level feasibility measured for
++all 12 signing × encryption combos** (table below), hardware E2E pending.
++The combined diff of the ML-KEM changes is kept as
++`mlkem-encryption-implementation.patch` in this directory (same convention
++as `manifest-encryption-implementation.patch` for the X25519 feature).
++
++## What changes vs. the X25519 variant
++
++Only the recipient of the COSE_Encrypt container: instead of an ephemeral
++X25519 public key in the recipient's unprotected header, the **ML-KEM
++encapsulation ciphertext rides in the recipient's ciphertext field**
++(1088 B for 768, 1568 B for 1024). KDF (HKDF-SHA256 + COSE_KDF_Context),
++AEAD (ChaCha20-Poly1305), AAD rules, sign-then-encrypt composition, and the
++`SUIT_MANIFEST_ENCRYPT` opt-out are all unchanged. Recipient alg IDs are
++private-use (**-70768** / **-70769** — IANA has no COSE alg for ML-KEM
++yet). The embedded device key is the **64-byte FIPS 203 seed (d‖z)**,
++re-expanded on-device by `wc_MlKemKey_MakeKeyWithRandom()` — the same
++expansion `cryptography`'s `from_seed_bytes()` performs (proven by the
++standalone example's public-key comparison).
++
++## Selection contract
++
++| `SUIT_MANIFEST_ENCRYPT_ALGO` | Device modules | Device key | Buffer pad |
++|---|---|---|---|
++| `x25519` (default) | c25519 pkg (already present) | `device_x25519.pem` (32 B raw) | +128 B |
++| `ml-kem-768` | `wolfcrypt_mlkem` + `wolfcrypt_mlkem768` | `device_mlkem768.pem` (64 B seed) | +1216 B |
++| `ml-kem-1024` | `wolfcrypt_mlkem` + `wolfcrypt_mlkem1024` | `device_mlkem1024.pem` (64 B seed) | +1696 B |
++
++Dispatch is **compile-time** (a firmware accepts exactly one scheme — it
++only has one device key); the received recipient alg ID is validated, so a
++container for the wrong scheme fails fast with
++`suit: recipient alg X != built-in Y` instead of a garbage decrypt.
++Plaintext pass-through and `SUIT_MANIFEST_ENCRYPT=0` behave exactly as in
++the X25519 feature. ML-KEM key generation needs OpenSSL 3.5+
++(`-provparam ml-kem.output_formats=seed-only`, the same seed-only lesson as
++ML-DSA), and the device build sources wolfSSL from the local
++`dist/tools/suit/ml-dsa-example/wolfssl` checkout (the pinned pkg predates
++ML-KEM), triggered automatically by `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-%`.
++
++## Changed / added files
++
++| File | Change |
++|---|---|
++| `sys/suit/encrypt/decrypt.c` | Compile-time KEM dispatch (`#ifdef MODULE_WOLFCRYPT_MLKEM`): recipient-alg validation helper, KEM-ciphertext recipient parsing, `_derive_cek` via `wc_MlKemKey_MakeKeyWithRandom` + `wc_MlKemKey_Decapsulate` (static `MlKemKey` — multi-KB, never on the 4 KB worker stack) |
++| `pkg/wolfssl/Makefile.wolfcrypt` | `wolfcrypt_mlkem` module → `wc_mlkem.c` + `wc_mlkem_poly.c` (the `wc_mldsa.c` special-case pattern) |
++| `pkg/wolfssl/Makefile.dep` | `wolfcrypt_mlkem` → `wolfcrypt_sha3` |
++| `pkg/wolfssl/include/user_settings.h` | `MODULE_WOLFCRYPT_MLKEM` block: `WOLFSSL_HAVE_MLKEM`, SHAKE128/256, `WOLFSSL_MLKEM_SMALL`, per-level `WOLFSSL_NO_ML_KEM_*` exclusions via the `wolfcrypt_mlkem768/1024` pseudomodules (512 always excluded — `cryptography` can't interop with it) |
++| `makefiles/suit.base.inc.mk` | `SUIT_MANIFEST_ENCRYPT_ALGO ?= x25519`; algo-aware `SUIT_ENC_KEY` name + `openssl genpkey` (seed-only provparam); `PKG_SOURCE_LOCAL_WOLFSSL` also on `ml-kem-%` |
++| `dist/tools/suit/enckey_to_header.py` | Accepts ML-KEM-768/1024 private keys (emits the 64-byte seed) alongside X25519 |
++| `examples/advanced/suit_update/Makefile` | Algo-aware module selection + per-algo buffer pad |
++| `examples/advanced/suit_update/manifest-encryption-mlkem/` | Standalone interop example (plan Step 1), both levels; `encrypt_manifest.py --key/-o` doubles as the host-side encryption tool |
++| `examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt` | Raw `size`/ld output of the 12-combo samr21 matrix below |
++
++## samr21-xpro feasibility matrix (measured 2026-07-19)
++
++`BOARD=samr21-xpro make clean all` per combo; RAM = data+bss of
++`suit_update.elf` against 32,768 B; ❌ = `slot0.elf` `.bss` overflow:
++
++| Signing \ Encryption | X25519 | ML-KEM-768 | ML-KEM-1024 |
++|---|---|---|---|
++| Ed25519 | ✅ 102,492 t / 21,160 RAM (11.6 KB spare) | ✅ 114,144 t / 26,264 RAM (6.5 KB spare) | ✅ 113,952 t / 27,768 RAM (5.0 KB spare) |
++| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (1.9 KB spare) | ❌ overflow 3,228 B | ❌ overflow 4,732 B |
++| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (88 B spare) | ❌ overflow 5,020 B | ❌ overflow 6,524 B |
++| ML-DSA-87 | ❌ overflow 3,756 B | ❌ overflow 8,860 B | ❌ overflow 10,364 B |
++
++Takeaways: **Ed25519 + ML-KEM-768/1024 fit with kilobytes to spare** (the
++recommended PQ-confidentiality demos); the full-PQ goal
++**ML-DSA-44 + ML-KEM-768 misses by only 3,228 B** — candidate mitigations:
++union the never-concurrent ML-DSA verify state and `MlKemKey` into one
++static workspace, shrink GNRC pktbuf, exact buffer values. ML-DSA-65
++survives only with X25519 (88 B spare — matching
++`MLDSA_HARDWARE_FIXES.md`'s ~216 B baseline minus the +128 B buffer pad).
++Flash never binds (≤116.7 KB text). Link-level verdicts only — hardware
++E2E for the fitting combos is plan Step 5b's remaining half.
++
++## Verification (native64, 2026-07-19)
++
++| Case | Result |
++|---|---|
++| Ed25519-signed, ML-KEM-768-encrypted manifest via `suit fetch file:///nvm0/...` | 1416 B container → `manifest decrypted (272 bytes)` → verified → payload installed |
++| Tampered container byte | rejected, AEAD error `-213` |
++| X25519 container on ML-KEM firmware | `suit: recipient alg -25 != built-in -70768`, rejected in parse |
++| Plaintext manifest | passes through, update succeeds |
++| Standalone example (both levels) | seed-expansion pubkey match, decrypt MATCH, tampered AEAD ct **and** tampered KEM ct rejected (the latter via FIPS 203 implicit rejection → wrong CEK → tag error) |
++
++## Gotchas / lessons learned
++
++- **Implicit rejection**: a tampered KEM ciphertext never produces a
++  decapsulation error — the failure surfaces later as an AEAD tag error.
++  Don't add (or test for) an error path at the decapsulation step.
++- **Seed vs. expanded key**: embed the 64 B seed, not the 2.4/3.2 KB
++  expanded decapsulation key; `MakeKeyWithRandom` re-expands
++  deterministically and the standalone example's pubkey comparison guards
++  the interop.
++- **Stale shared headers** (standalone example): both levels write the same
++  `device_*.h`/`encrypted.h` filenames — the script rewrites them on every
++  run after this bit us (a 1024 pubkey against a 768 build looks like a
++  seed-expansion mismatch / `BUFFER_E` -132).
++- **No RNG needed on-device** (decapsulation and seed expansion are
++  deterministic), and no symbol collisions this time — `wc_mlkem*` shares
++  nothing with the c25519 pkg.
++- Security caveats as before: seed embedded in the image
++  (prototype-grade), KEM gives no sender authentication (the COSE_Sign1
++  signature remains the authenticity anchor), one encrypted artifact per
++  device key.
+diff --git a/examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md b/examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md
+index 1f808fe2da..7a90b205b1 100644
+--- a/examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md
++++ b/examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md
+@@ -17,10 +17,11 @@ Verified preconditions (no wolfssl rebuild needed this time):
+ 
+ - [x] Step 0: persist this plan as `examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md` (2026-07-19)
+ - [x] Step 1: standalone interop example `examples/advanced/suit_update/manifest-encryption-mlkem/` (2026-07-19), both levels verified: seed-expansion interop check OK (wolfCrypt `MakeKeyWithRandom` ≡ cryptography `from_seed_bytes`), Python-encrypted → wolfCrypt-decrypted MATCH, tampered AEAD ct rejected (-213), tampered KEM ct rejected via FIPS 203 implicit rejection (wrong ss → wrong CEK → tag error, **no** decapsulation error code), 3.7 KB payloads OK. Measured container overheads: **1144 B (768) / 1624 B (1024)**. Gotcha found: the per-level Python runs share header filenames — the script now always rewrites `device_*.h`/`encrypted.h` so a stale other-level header can't poison the C build (symptom: pubkey-interop MISMATCH / `DecodePublicKey` BUFFER_E -132).
+-- [ ] Step 2: device integration — algorithm dispatch in `sys/suit/encrypt/decrypt.c`, `wolfcrypt_mlkem` pseudomodule, `SUIT_MANIFEST_ENCRYPT_ALGO=x25519|ml-kem-768|ml-kem-1024` (default x25519)
+-- [ ] Step 3: host tooling — ML-KEM device-key gen (`openssl genpkey -algorithm ml-kem-*` seed-only, extend `enckey_to_header.py`)
+-- [ ] Step 4: buffer sizing — container overhead ~1.2 KB (768) / ~1.7 KB (1024)
+-- [ ] Step 5: E2E native64, then the samr21-xpro **feasibility matrix** (all signing × KEM combinations, see section below): link-time RAM verdict for every combo + hardware E2E for the ones that fit
++- [x] Step 2: device integration (2026-07-19) — **compile-time** algorithm dispatch in `sys/suit/encrypt/decrypt.c` (`#ifdef MODULE_WOLFCRYPT_MLKEM` selects the KEM recipient path; the received recipient alg ID is validated against the built-in one, so a container for the wrong scheme is rejected with a clear log line). New `wolfcrypt_mlkem` pseudomodule: `wc_mlkem.c`+`wc_mlkem_poly.c` special-cased in `pkg/wolfssl/Makefile.wolfcrypt`, SHA3 dep in `pkg/wolfssl/Makefile.dep`, `user_settings.h` gates (`WOLFSSL_HAVE_MLKEM`, SHAKE, `WOLFSSL_MLKEM_SMALL`, per-level `WOLFSSL_NO_ML_KEM_*` exclusions via `wolfcrypt_mlkem768/1024`). `PKG_SOURCE_LOCAL_WOLFSSL` now also triggers on `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-%` (`makefiles/suit.base.inc.mk`).
++- [x] Step 3: host tooling (2026-07-19) — `SUIT_MANIFEST_ENCRYPT_ALGO`-aware device-key gen in `suit.base.inc.mk` (`openssl genpkey -algorithm ml-kem-*` with seed-only provparam; key name `device_mlkem768/1024`), `enckey_to_header.py` accepts X25519 + ML-KEM (emits the 64-byte seed); manifest encryption via `manifest-encryption-mlkem/encrypt_manifest.py --key ... -o ...` after `suit-tool sign` (manual, like the X25519 flow)
++- [x] Step 4: buffer sizing (2026-07-19) — app Makefile adds +1216 B (768) / +1696 B (1024) instead of +128 B when a KEM algo is selected
++- [x] Step 5a: E2E native64 (2026-07-19, Ed25519 + ML-KEM-768): encrypted manifest (1416 B) → `manifest decrypted (272 bytes)` → signature verified → payload installed; tampered container rejected (-213); an X25519 container on ML-KEM firmware rejected with `recipient alg -25 != built-in -70768`; plaintext manifest passes through.
++- [x] Step 5b (link-time part, 2026-07-19): samr21-xpro **feasibility matrix measured for all 12 combos** — see the table below. Fits: Ed25519 × {X25519, ML-KEM-768, ML-KEM-1024}, ML-DSA-44 × X25519, ML-DSA-65 × X25519 (88 B spare). Everything else overflows RAM. Remaining: hardware E2E on the fitting combos (start Ed25519 + ML-KEM-768), and optionally the workspace-union mitigation to chase ML-DSA-44 + ML-KEM-768 (misses by 3,228 B).
+ - [ ] Step 6: docs (MLKEM_ENCRYPTION_CHANGES.md, NATIVE_SETUP/SAMR21 updates, CLAUDE.md) + refresh implementation patch
+ 
+ ## Design
+@@ -77,16 +78,23 @@ Per-combo added RAM when swapping X25519 → ML-KEM (all static/.bss unless note
+ - **`MlKemKey` state**: multi-KB (k=3: ≈3–4 KB, k=4: ≈4–5 KB with `WOLFSSL_MLKEM_SMALL`); per the ML-DSA lesson it must be `static`, so it lands in `.bss`. Decapsulation stack on top (SMALL variant, estimated 1–2 KB — must fit or grow the 4 KB worker stack).
+ - The 64-byte seed key replaces the 32-byte X25519 key in flash (negligible).
+ 
+-Expected verdicts (to be **replaced by measured link results** in Step 5 — a `BOARD=samr21-xpro make` per combo gives the RAM verdict at link time, no hardware needed; hardware E2E only for combos that link with margin):
++**MEASURED link results (2026-07-19, `BOARD=samr21-xpro make clean all` per combo; RAM = data+bss of `suit_update.elf` against 32,768 B; ❌ = `.bss` overflow of `slot0.elf` by the stated bytes):**
+ 
+-| Signing \ Encryption | X25519 (measured/expected) | ML-KEM-768 | ML-KEM-1024 |
++| Signing \ Encryption | X25519 | ML-KEM-768 | ML-KEM-1024 |
+ |---|---|---|---|
+-| Ed25519 | works on native64; hardware pending (plan 5b), ample margin expected | **primary PQ target** — plausible (~5–6 KB added on a roomy baseline) | borderline — measure |
+-| ML-DSA-44 | plausible (C had headroom) | borderline — the full-PQ goal (PQ signature + PQ KEM); measure first | unlikely |
+-| ML-DSA-65 | at risk (≲90 B slack) | **won't fit** (needs ≥4 KB more against 216 B) | won't fit |
+-| ML-DSA-87 | already overflows by 3.6 KB unencrypted | won't fit | won't fit |
++| Ed25519 | ✅ 102,492 t / 21,160 RAM (**11.6 KB spare**) | ✅ 114,144 t / 26,264 RAM (**6.5 KB spare**) | ✅ 113,952 t / 27,768 RAM (**5.0 KB spare**) |
++| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (**1.9 KB spare**) | ❌ overflow **3,228 B** | ❌ overflow 4,732 B |
++| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (**88 B spare** — exactly the predicted ≲90 B) | ❌ overflow 5,020 B | ❌ overflow 6,524 B |
++| ML-DSA-87 | ❌ overflow 3,756 B | ❌ overflow 8,860 B | ❌ overflow 10,364 B |
+ 
+-Step 5 deliverable: this table refreshed with actual `text/data/bss` (or overflow deltas) for **all 12 combos**, recorded in `MLKEM_ENCRYPTION_CHANGES.md` — same methodology as Example D's documented dead end: a combo that doesn't link is still a thesis result. Mitigations to try for the ML-DSA-44 + ML-KEM-768 goal if it overflows: share one static crypto workspace between the (never concurrent) verify and decrypt paths via a union, shrink GNRC pktbuf, and the buffer-sizing trick of exact (non-round) values.
++Conclusions:
++
++- **Ed25519 + ML-KEM-768/1024 both fit comfortably** — classical-signature + PQ-confidentiality works on this board at link level; hardware E2E is the remaining check. (Curious but consistent artifact: the 1024 build's text is marginally *smaller* than 768's — parameter-set-specific code paths.)
++- **The full-PQ combo (ML-DSA-44 + ML-KEM-768) misses by 3,228 B** — the closest failure. Mitigation candidates, in order: share one static crypto workspace between the never-concurrent ML-DSA verify state (~10 KB class) and `MlKemKey` (union), shrink GNRC pktbuf, exact buffer values. 3.2 KB is plausibly recoverable via the union alone.
++- ML-DSA-65/87 + any KEM, and ML-DSA-87 + anything, are confirmed dead ends on 32 KB RAM (documented like Example D).
++- Flash is never the binding constraint (max 116.7 KB text).
++
++Raw ld/size output for all 12 combos: see `MLKEM_ENCRYPTION_CHANGES.md`.
+ 
+ ## Later steps (outline — not this round)
+ 
+diff --git a/examples/advanced/suit_update/Makefile b/examples/advanced/suit_update/Makefile
+index 6ca296e0d6..1af7967cf2 100644
+--- a/examples/advanced/suit_update/Makefile
++++ b/examples/advanced/suit_update/Makefile
+@@ -73,13 +73,27 @@ endif
+ # Manifest confidentiality: on by default, opt out with
+ # SUIT_MANIFEST_ENCRYPT=0 (module selection must happen here, before
+ # dependency resolution; key handling lives in makefiles/suit.base.inc.mk,
+-# workflow in MANIFEST_ENCRYPTION_PLAN.md). The COSE_Encrypt wrapper adds
+-# ~130B to the manifest (32B ephemeral key + 12B nonce + 16B tag + CBOR
+-# framing), so grow the fetch buffer accordingly.
++# workflow in MANIFEST_ENCRYPTION_PLAN.md). SUIT_MANIFEST_ENCRYPT_ALGO
++# picks the key-establishment scheme: x25519 (default, classical) or
++# ml-kem-768 / ml-kem-1024 (post-quantum, MLKEM_ENCRYPTION_PLAN.md). The
++# COSE_Encrypt wrapper grows the fetch buffer accordingly: ~130B for
++# X25519 (32B ephemeral key + nonce + tag + framing), ~1.2/1.7KB for
++# ML-KEM (the encapsulation ciphertext dominates).
+ SUIT_MANIFEST_ENCRYPT ?= 1
++SUIT_MANIFEST_ENCRYPT_ALGO ?= x25519
+ ifeq (1,$(SUIT_MANIFEST_ENCRYPT))
+   USEMODULE += suit_manifest_encrypt
+-  SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 128)
++  ifneq (,$(filter ml-kem-%,$(SUIT_MANIFEST_ENCRYPT_ALGO)))
++    USEMODULE += wolfcrypt_mlkem
++    USEMODULE += wolfcrypt_mlkem$(subst ml-kem-,,$(SUIT_MANIFEST_ENCRYPT_ALGO))
++    ifeq (ml-kem-1024,$(SUIT_MANIFEST_ENCRYPT_ALGO))
++      SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1696)
++    else
++      SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1216)
++    endif
++  else
++    SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 128)
++  endif
+ endif
+ 
+ ifneq (640,$(SUIT_MANIFEST_BUFSIZE))
+diff --git a/examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt b/examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt
+new file mode 100644
+index 0000000000..f2e8c68249
+--- /dev/null
++++ b/examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt
+@@ -0,0 +1,70 @@
++=== SIG=ed25519 ENC=x25519 ===
++   text	   data	    bss	    dec	    hex	filename
++ 102492	    260	  20900	 123652	  1e304	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== SIG=ed25519 ENC=ml-kem-768 ===
++   text	   data	    bss	    dec	    hex	filename
++ 114144	    260	  26004	 140408	  22478	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== SIG=ed25519 ENC=ml-kem-1024 ===
++   text	   data	    bss	    dec	    hex	filename
++ 113952	    260	  27508	 141720	  22998	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== SIG=ml-dsa-44 ENC=x25519 ===
++   text	   data	    bss	    dec	    hex	filename
++ 116100	    260	  30628	 146988	  23e2c	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== SIG=ml-dsa-44 ENC=ml-kem-768 ===
++LINK/BUILD FAILED:
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 3228 bytes
++collect2: error: ld returned 1 exit status
++make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
++
++=== SIG=ml-dsa-44 ENC=ml-kem-1024 ===
++LINK/BUILD FAILED:
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 4732 bytes
++collect2: error: ld returned 1 exit status
++make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
++
++=== SIG=ml-dsa-65 ENC=x25519 ===
++   text	   data	    bss	    dec	    hex	filename
++ 116708	    260	  32420	 149388	  2478c	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== SIG=ml-dsa-65 ENC=ml-kem-768 ===
++LINK/BUILD FAILED:
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 5020 bytes
++collect2: error: ld returned 1 exit status
++make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
++
++=== SIG=ml-dsa-65 ENC=ml-kem-1024 ===
++LINK/BUILD FAILED:
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 6524 bytes
++collect2: error: ld returned 1 exit status
++make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
++
++=== SIG=ml-dsa-87 ENC=x25519 ===
++LINK/BUILD FAILED:
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 3756 bytes
++collect2: error: ld returned 1 exit status
++make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
++
++=== SIG=ml-dsa-87 ENC=ml-kem-768 ===
++LINK/BUILD FAILED:
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 8860 bytes
++collect2: error: ld returned 1 exit status
++make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
++
++=== SIG=ml-dsa-87 ENC=ml-kem-1024 ===
++LINK/BUILD FAILED:
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 10364 bytes
++collect2: error: ld returned 1 exit status
++make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
++
++MATRIX DONE
+diff --git a/makefiles/suit.base.inc.mk b/makefiles/suit.base.inc.mk
+index 7a63341b9c..3087598b88 100644
+--- a/makefiles/suit.base.inc.mk
++++ b/makefiles/suit.base.inc.mk
+@@ -35,7 +35,9 @@ SUIT_KEY_GENPKEY_ARGS ?= $(if $(filter ml-dsa-%,$(SUIT_KEY_ALGO)),-provparam ml-
+ # --enable-dilithium, which covers all three parameter sets) rather than
+ # RIOT's own pinned wolfssl pkg fetch, which predates wolfSSL's ML-DSA
+ # support - see examples/advanced/suit_update/CLAUDE.md for details/caveats.
+-ifneq (,$(filter ml-dsa-%,$(SUIT_KEY_ALGO)))
++# The local checkout is also needed for ML-KEM manifest encryption (the
++# pinned wolfssl pkg predates wolfSSL's ML-KEM support too).
++ifneq (,$(filter ml-dsa-%,$(SUIT_KEY_ALGO))$(filter ml-kem-%,$(SUIT_MANIFEST_ENCRYPT_ALGO)))
+   export PKG_SOURCE_LOCAL_WOLFSSL ?= $(RIOTBASE)/dist/tools/suit/ml-dsa-example/wolfssl
+ endif
+ 
+@@ -119,9 +121,17 @@ suit/genkey: $(SUIT_SEC)
+ # the firmware via a generated header (prototype-grade key storage: the key
+ # ends up in the image).
+ export SUIT_MANIFEST_ENCRYPT ?= 1
++# Key-establishment scheme: x25519 (default) or ml-kem-768 / ml-kem-1024
++# (post-quantum; needs OpenSSL 3.5+ for key generation and the local
++# wolfssl checkout on-device — see MLKEM_ENCRYPTION_PLAN.md)
++export SUIT_MANIFEST_ENCRYPT_ALGO ?= x25519
++# OpenSSL writes ML-KEM keys in combined seed+expanded form by default;
++# `cryptography` can only parse seed-only (same story as ML-DSA above)
++SUIT_ENC_GENPKEY_ARGS ?= $(if $(filter ml-kem-%,$(SUIT_MANIFEST_ENCRYPT_ALGO)),-provparam ml-kem.output_formats=seed-only)
+ 
+ ifneq (,$(filter suit_manifest_encrypt,$(USEMODULE)))
+-  SUIT_ENC_KEY ?= device_x25519
++  # device_x25519 / device_mlkem768 / device_mlkem1024
++  SUIT_ENC_KEY ?= device_$(subst -,,$(SUIT_MANIFEST_ENCRYPT_ALGO))
+   SUIT_ENC_SEC ?= $(SUIT_KEY_DIR)/$(SUIT_ENC_KEY).pem
+   SUIT_ENC_HDR = $(SUIT_PUB_HDR_DIR)suit_enc_seckey.h
+   BUILDDEPS += $(SUIT_ENC_HDR)
+@@ -129,7 +139,7 @@ ifneq (,$(filter suit_manifest_encrypt,$(USEMODULE)))
+   $(SUIT_ENC_SEC): | $(CLEAN)
+ 	$(Q)echo suit: generating manifest-encryption key in $(SUIT_KEY_DIR)
+ 	$(Q)mkdir -p $(SUIT_KEY_DIR)
+-	$(Q)openssl genpkey -algorithm X25519 -out $@
++	$(Q)openssl genpkey -algorithm $(SUIT_MANIFEST_ENCRYPT_ALGO) $(SUIT_ENC_GENPKEY_ARGS) -out $@
+ 
+   # FORCE for the same key-switching reason as SUIT_PUB_HDR above
+   $(SUIT_ENC_HDR): $(SUIT_ENC_SEC) FORCE | $(CLEAN)
+diff --git a/pkg/wolfssl/Makefile.dep b/pkg/wolfssl/Makefile.dep
+index 85322e619c..e13e180a1a 100644
+--- a/pkg/wolfssl/Makefile.dep
++++ b/pkg/wolfssl/Makefile.dep
+@@ -25,6 +25,10 @@ ifneq (,$(filter wolfcrypt_mldsa,$(USEMODULE)))
+   USEMODULE += wolfcrypt_asn
+ endif
+ 
++ifneq (,$(filter wolfcrypt_mlkem,$(USEMODULE)))
++  USEMODULE += wolfcrypt_sha3
++endif
++
+ ifneq (,$(filter wolfcrypt_aes,$(USEMODULE)))
+   USEMODULE += wolfcrypt_cmac
+   USEMODULE += wolfcrypt_coding
+diff --git a/pkg/wolfssl/Makefile.wolfcrypt b/pkg/wolfssl/Makefile.wolfcrypt
+index 5c21d75d74..2c6d8be786 100644
+--- a/pkg/wolfssl/Makefile.wolfcrypt
++++ b/pkg/wolfssl/Makefile.wolfcrypt
+@@ -52,4 +52,10 @@ ifneq (,$(filter wolfcrypt_mldsa,$(USEMODULE)))
+   SRC += wc_mldsa.c
+ endif
+ 
++# same for ML-KEM: two sources behind the one "wolfcrypt_mlkem" pseudomodule
++ifneq (,$(filter wolfcrypt_mlkem,$(USEMODULE)))
++  SRC += wc_mlkem.c
++  SRC += wc_mlkem_poly.c
++endif
++
+ include $(RIOTBASE)/Makefile.base
+diff --git a/pkg/wolfssl/include/user_settings.h b/pkg/wolfssl/include/user_settings.h
+index a4c08abbf4..df8c7dcd7d 100644
+--- a/pkg/wolfssl/include/user_settings.h
++++ b/pkg/wolfssl/include/user_settings.h
+@@ -163,6 +163,27 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
+ #endif
+ #endif
+ 
++#ifdef MODULE_WOLFCRYPT_MLKEM
++#define WOLFSSL_HAVE_MLKEM
++/* ML-KEM needs the SHA3 hashes and SHAKE XOFs (same note as ML-DSA above) */
++#define WOLFSSL_SHAKE128
++#define WOLFSSL_SHAKE256
++/* Trade speed for the smallest working memory - SUIT manifest decryption
++ * is a rare, non-latency-critical operation on 32KB-RAM targets. */
++#define WOLFSSL_MLKEM_SMALL
++/* Compile out every parameter set that wasn't selected via its
++ * wolfcrypt_mlkem768/1024 pseudomodule - MlKemKey's embedded vectors (and
++ * the code) follow the largest set left enabled. 512 has no pseudomodule:
++ * Python's `cryptography` offers no ML-KEM-512, so it can never interop. */
++#define WOLFSSL_NO_ML_KEM_512
++#ifndef MODULE_WOLFCRYPT_MLKEM768
++#define WOLFSSL_NO_ML_KEM_768
++#endif
++#ifndef MODULE_WOLFCRYPT_MLKEM1024
++#define WOLFSSL_NO_ML_KEM_1024
++#endif
++#endif
++
+ #undef NO_AES
+ #undef NO_CODING
+ #undef NO_CMAC
+diff --git a/sys/suit/encrypt/decrypt.c b/sys/suit/encrypt/decrypt.c
+index 192900a892..e0c14e851a 100644
+--- a/sys/suit/encrypt/decrypt.c
++++ b/sys/suit/encrypt/decrypt.c
+@@ -23,25 +23,47 @@
+  * @}
+  */
+ 
++#include <inttypes.h>
+ #include <stdint.h>
+ #include <string.h>
+ 
+ #include "log.h"
+ #include "suit/manifest_encrypt.h"
+ 
+-/* X25519 via the c25519 pkg (dlbeer): already linked for Ed25519 manifest
+- * verification (libcose_crypt_c25519), and its low-mem field arithmetic
+- * shares symbol names (fprime_*) with wolfCrypt's fe_low_mem.c, so pulling
+- * wolfCrypt's CURVE25519_SMALL implementation alongside it would collide at
+- * link time. wolfCrypt still provides HKDF + ChaCha20-Poly1305. */
+-#include "c25519.h"
+-
+ #include <wolfssl/wolfcrypt/settings.h>
+ #include <wolfssl/wolfcrypt/hmac.h>
+ #include <wolfssl/wolfcrypt/kdf.h>
+ #include <wolfssl/wolfcrypt/chacha20_poly1305.h>
+ #include <wolfssl/wolfcrypt/error-crypt.h>
+ 
++#ifdef MODULE_WOLFCRYPT_MLKEM
++/* Post-quantum variant (SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768|ml-kem-1024):
++ * the recipient carries an ML-KEM encapsulation ciphertext instead of an
++ * ephemeral X25519 key; the embedded device key is the 64-byte FIPS 203
++ * seed (d||z), re-expanded via wc_MlKemKey_MakeKeyWithRandom(). Private-use
++ * COSE alg IDs (no IANA registration for ML-KEM yet), matching the
++ * manifest-encryption-mlkem host tooling. */
++#include <wolfssl/wolfcrypt/wc_mlkem.h>
++#if defined(MODULE_WOLFCRYPT_MLKEM1024)
++    #define SUIT_MLKEM_TYPE     WC_ML_KEM_1024
++    #define COSE_ALG_RECIPIENT  (-70769)
++    #define SUIT_MLKEM_CT_SIZE  WC_ML_KEM_1024_CIPHER_TEXT_SIZE
++#else
++    #define SUIT_MLKEM_TYPE     WC_ML_KEM_768
++    #define COSE_ALG_RECIPIENT  (-70768)
++    #define SUIT_MLKEM_CT_SIZE  WC_ML_KEM_768_CIPHER_TEXT_SIZE
++#endif
++#else
++/* Default variant: ephemeral-static X25519 (COSE ECDH-ES + HKDF-256), via
++ * the c25519 pkg (dlbeer): already linked for Ed25519 manifest verification
++ * (libcose_crypt_c25519), and its low-mem field arithmetic shares symbol
++ * names (fprime_*) with wolfCrypt's fe_low_mem.c, so pulling wolfCrypt's
++ * CURVE25519_SMALL implementation alongside it would collide at link time.
++ * wolfCrypt still provides HKDF + ChaCha20-Poly1305. */
++#include "c25519.h"
++#define COSE_ALG_RECIPIENT  (-25)   /* ECDH-ES + HKDF-256 */
++#endif
++
+ #include <nanocbor/nanocbor.h>
+ 
+ #define X25519_KEYSIZE  (32)
+@@ -51,7 +73,6 @@
+ #include "suit_enc_seckey.h"
+ 
+ #define COSE_ALG_CHACHA20_POLY1305  24
+-#define COSE_ALG_ECDH_ES_HKDF_256  (-25)
+ #define COSE_TAG_ENCRYPT            96
+ #define COSE_HDR_IV                 5
+ #define COSE_KEY_PARAM_EPHEMERAL   (-1)
+@@ -64,15 +85,52 @@
+ typedef struct {
+     const uint8_t *body_protected;      /* serialized {1: 24} */
+     size_t body_protected_len;
+-    const uint8_t *recipient_protected; /* serialized {1: -25} */
++    const uint8_t *recipient_protected; /* serialized {1: COSE_ALG_RECIPIENT} */
+     size_t recipient_protected_len;
+     const uint8_t *nonce;               /* 12 bytes */
+     const uint8_t *ciphertext;          /* without the trailing tag */
+     size_t ciphertext_len;
+     const uint8_t *auth_tag;            /* 16 bytes */
++#ifdef MODULE_WOLFCRYPT_MLKEM
++    const uint8_t *kem_ct;              /* ML-KEM encapsulation ciphertext */
++    size_t kem_ct_len;
++#else
+     const uint8_t *ephemeral_pub;       /* 32 bytes */
++#endif
+ } cose_encrypt_msg_t;
+ 
++/* Decode the alg (label 1) from a serialized protected-header map and check
++ * it is the one this firmware was built for */
++static int _check_recipient_alg(const uint8_t *protected_hdr, size_t len)
++{
++    nanocbor_value_t it, map;
++    nanocbor_decoder_init(&it, protected_hdr, len);
++    if (nanocbor_enter_map(&it, &map) < 0) {
++        return -1;
++    }
++    while (!nanocbor_at_end(&map)) {
++        int32_t key, alg;
++        if (nanocbor_get_int32(&map, &key) < 0) {
++            return -1;
++        }
++        if (key == 1) {
++            if (nanocbor_get_int32(&map, &alg) < 0) {
++                return -1;
++            }
++            if (alg != COSE_ALG_RECIPIENT) {
++                LOG_INFO("suit: recipient alg %" PRIi32 " != built-in %d\n",
++                         alg, COSE_ALG_RECIPIENT);
++                return -1;
++            }
++            return 0;
++        }
++        if (nanocbor_skip(&map) < 0) {
++            return -1;
++        }
++    }
++    return -1;
++}
++
+ /* Fetch the value for `wanted` from a CBOR map, skipping other entries */
+ static int _map_get_bstr(nanocbor_value_t *map, int32_t wanted,
+                          const uint8_t **buf, size_t *len)
+@@ -95,10 +153,14 @@ static int _map_get_bstr(nanocbor_value_t *map, int32_t wanted,
+ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
+                                cose_encrypt_msg_t *msg)
+ {
+-    nanocbor_value_t it, body, map, recipients, recipient, key_map;
++    nanocbor_value_t it, body, map, recipients, recipient;
++#ifndef MODULE_WOLFCRYPT_MLKEM
++    nanocbor_value_t key_map;
++    size_t eph_len;
++#endif
+     uint32_t tag;
+     const uint8_t *ct;
+-    size_t ct_len, eph_len, nonce_len;
++    size_t ct_len, nonce_len;
+ 
+     nanocbor_decoder_init(&it, buf, len);
+     if (nanocbor_get_tag(&it, &tag) < 0 || tag != COSE_TAG_ENCRYPT) {
+@@ -122,13 +184,29 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
+     msg->ciphertext_len = ct_len - TAG_LEN;
+     msg->auth_tag = ct + ct_len - TAG_LEN;
+ 
+-    /* single recipient: [protected, {-1: COSE_Key}, h''] */
++    /* single recipient:
++     * X25519: [protected, {-1: COSE_Key}, h'']
++     * ML-KEM: [protected, {}, <KEM ciphertext>] */
+     if (nanocbor_enter_array(&body, &recipients) < 0 ||
+         nanocbor_enter_array(&recipients, &recipient) < 0 ||
+         nanocbor_get_bstr(&recipient, &msg->recipient_protected,
+                           &msg->recipient_protected_len) < 0) {
+         return -1;
+     }
++    if (_check_recipient_alg(msg->recipient_protected,
++                             msg->recipient_protected_len) < 0) {
++        return -1;
++    }
++#ifdef MODULE_WOLFCRYPT_MLKEM
++    if (nanocbor_skip(&recipient) < 0) {    /* unprotected map (empty) */
++        return -1;
++    }
++    if (nanocbor_get_bstr(&recipient, &msg->kem_ct, &msg->kem_ct_len) < 0 ||
++        msg->kem_ct_len != SUIT_MLKEM_CT_SIZE) {
++        return -1;
++    }
++    return 0;
++#else
+     if (nanocbor_enter_map(&recipient, &map) < 0) {
+         return -1;
+     }
+@@ -151,6 +229,7 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
+         }
+     }
+     return -1;
++#endif
+ }
+ 
+ /* HKDF info: COSE_KDF_Context (RFC 9053 5.2), byte-identical to the host:
+@@ -192,6 +271,46 @@ static int _build_enc_structure(const cose_encrypt_msg_t *msg,
+     return *written <= out_len ? 0 : -1;
+ }
+ 
++#ifdef MODULE_WOLFCRYPT_MLKEM
++static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
++{
++    int ret;
++    /* multi-KB struct: keep off the 4KB worker stack (see the ML-DSA
++     * .bss-corruption lesson in MLDSA_HARDWARE_FIXES.md) */
++    static MlKemKey key;
++    byte shared[WC_ML_KEM_SS_SZ];
++    uint8_t info[64];
++    size_t info_len;
++
++    if (_build_kdf_context(msg, info, sizeof(info), &info_len) < 0) {
++        return -1;
++    }
++
++    ret = wc_MlKemKey_Init(&key, SUIT_MLKEM_TYPE, NULL, INVALID_DEVID);
++    if (ret != 0) {
++        return ret;
++    }
++    /* deterministic expansion of the embedded 64-byte d||z seed — the same
++     * expansion the host's `cryptography` performs from private_bytes_raw().
++     * A tampered KEM ciphertext is not an error here: FIPS 203 implicit
++     * rejection yields a different shared secret, failing the AEAD tag. */
++    ret = wc_MlKemKey_MakeKeyWithRandom(&key, suit_enc_seckey,
++                                        sizeof(suit_enc_seckey));
++    if (ret == 0) {
++        ret = wc_MlKemKey_Decapsulate(&key, shared, msg->kem_ct,
++                                      (word32)msg->kem_ct_len);
++    }
++    if (ret == 0) {
++        ret = wc_HKDF(WC_SHA256, shared, sizeof(shared), NULL, 0,
++                      info, (word32)info_len,
++                      cek, CHACHA20_POLY1305_AEAD_KEYSIZE);
++    }
++
++    memset(shared, 0, sizeof(shared));
++    wc_MlKemKey_Free(&key);
++    return ret;
++}
++#else
+ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
+ {
+     int ret;
+@@ -231,6 +350,7 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
+     memset(shared, 0, sizeof(shared));
+     return ret;
+ }
++#endif
+ 
+ int suit_manifest_decrypt(uint8_t *buf, size_t size,
+                           const uint8_t **plaintext, size_t *plaintext_len)

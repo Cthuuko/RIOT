@@ -25,6 +25,10 @@ ifneq (,$(filter wolfcrypt_mldsa,$(USEMODULE)))
   USEMODULE += wolfcrypt_asn
 endif
 
+ifneq (,$(filter wolfcrypt_mlkem,$(USEMODULE)))
+  USEMODULE += wolfcrypt_sha3
+endif
+
 ifneq (,$(filter wolfcrypt_aes,$(USEMODULE)))
   USEMODULE += wolfcrypt_cmac
   USEMODULE += wolfcrypt_coding

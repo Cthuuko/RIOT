@@ -163,6 +163,27 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
 #endif
 #endif
 
+#ifdef MODULE_WOLFCRYPT_MLKEM
+#define WOLFSSL_HAVE_MLKEM
+/* ML-KEM needs the SHA3 hashes and SHAKE XOFs (same note as ML-DSA above) */
+#define WOLFSSL_SHAKE128
+#define WOLFSSL_SHAKE256
+/* Trade speed for the smallest working memory - SUIT manifest decryption
+ * is a rare, non-latency-critical operation on 32KB-RAM targets. */
+#define WOLFSSL_MLKEM_SMALL
+/* Compile out every parameter set that wasn't selected via its
+ * wolfcrypt_mlkem768/1024 pseudomodule - MlKemKey's embedded vectors (and
+ * the code) follow the largest set left enabled. 512 has no pseudomodule:
+ * Python's `cryptography` offers no ML-KEM-512, so it can never interop. */
+#define WOLFSSL_NO_ML_KEM_512
+#ifndef MODULE_WOLFCRYPT_MLKEM768
+#define WOLFSSL_NO_ML_KEM_768
+#endif
+#ifndef MODULE_WOLFCRYPT_MLKEM1024
+#define WOLFSSL_NO_ML_KEM_1024
+#endif
+#endif
+
 #undef NO_AES
 #undef NO_CODING
 #undef NO_CMAC

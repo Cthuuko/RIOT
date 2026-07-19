@@ -1,0 +1,70 @@
+=== SIG=ed25519 ENC=x25519 ===
+   text	   data	    bss	    dec	    hex	filename
+ 102492	    260	  20900	 123652	  1e304	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== SIG=ed25519 ENC=ml-kem-768 ===
+   text	   data	    bss	    dec	    hex	filename
+ 114144	    260	  26004	 140408	  22478	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== SIG=ed25519 ENC=ml-kem-1024 ===
+   text	   data	    bss	    dec	    hex	filename
+ 113952	    260	  27508	 141720	  22998	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== SIG=ml-dsa-44 ENC=x25519 ===
+   text	   data	    bss	    dec	    hex	filename
+ 116100	    260	  30628	 146988	  23e2c	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== SIG=ml-dsa-44 ENC=ml-kem-768 ===
+LINK/BUILD FAILED:
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 3228 bytes
+collect2: error: ld returned 1 exit status
+make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
+
+=== SIG=ml-dsa-44 ENC=ml-kem-1024 ===
+LINK/BUILD FAILED:
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 4732 bytes
+collect2: error: ld returned 1 exit status
+make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
+
+=== SIG=ml-dsa-65 ENC=x25519 ===
+   text	   data	    bss	    dec	    hex	filename
+ 116708	    260	  32420	 149388	  2478c	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== SIG=ml-dsa-65 ENC=ml-kem-768 ===
+LINK/BUILD FAILED:
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 5020 bytes
+collect2: error: ld returned 1 exit status
+make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
+
+=== SIG=ml-dsa-65 ENC=ml-kem-1024 ===
+LINK/BUILD FAILED:
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 6524 bytes
+collect2: error: ld returned 1 exit status
+make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
+
+=== SIG=ml-dsa-87 ENC=x25519 ===
+LINK/BUILD FAILED:
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 3756 bytes
+collect2: error: ld returned 1 exit status
+make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
+
+=== SIG=ml-dsa-87 ENC=ml-kem-768 ===
+LINK/BUILD FAILED:
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 8860 bytes
+collect2: error: ld returned 1 exit status
+make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
+
+=== SIG=ml-dsa-87 ENC=ml-kem-1024 ===
+LINK/BUILD FAILED:
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 10364 bytes
+collect2: error: ld returned 1 exit status
+make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
+
+MATRIX DONE

@@ -23,24 +23,46 @@
  * @}
  */
 
+#include <inttypes.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "log.h"
 #include "suit/manifest_encrypt.h"
 
-/* X25519 via the c25519 pkg (dlbeer): already linked for Ed25519 manifest
- * verification (libcose_crypt_c25519), and its low-mem field arithmetic
- * shares symbol names (fprime_*) with wolfCrypt's fe_low_mem.c, so pulling
- * wolfCrypt's CURVE25519_SMALL implementation alongside it would collide at
- * link time. wolfCrypt still provides HKDF + ChaCha20-Poly1305. */
-#include "c25519.h"
-
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/kdf.h>
 #include <wolfssl/wolfcrypt/chacha20_poly1305.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
+
+#ifdef MODULE_WOLFCRYPT_MLKEM
+/* Post-quantum variant (SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768|ml-kem-1024):
+ * the recipient carries an ML-KEM encapsulation ciphertext instead of an
+ * ephemeral X25519 key; the embedded device key is the 64-byte FIPS 203
+ * seed (d||z), re-expanded via wc_MlKemKey_MakeKeyWithRandom(). Private-use
+ * COSE alg IDs (no IANA registration for ML-KEM yet), matching the
+ * manifest-encryption-mlkem host tooling. */
+#include <wolfssl/wolfcrypt/wc_mlkem.h>
+#if defined(MODULE_WOLFCRYPT_MLKEM1024)
+    #define SUIT_MLKEM_TYPE     WC_ML_KEM_1024
+    #define COSE_ALG_RECIPIENT  (-70769)
+    #define SUIT_MLKEM_CT_SIZE  WC_ML_KEM_1024_CIPHER_TEXT_SIZE
+#else
+    #define SUIT_MLKEM_TYPE     WC_ML_KEM_768
+    #define COSE_ALG_RECIPIENT  (-70768)
+    #define SUIT_MLKEM_CT_SIZE  WC_ML_KEM_768_CIPHER_TEXT_SIZE
+#endif
+#else
+/* Default variant: ephemeral-static X25519 (COSE ECDH-ES + HKDF-256), via
+ * the c25519 pkg (dlbeer): already linked for Ed25519 manifest verification
+ * (libcose_crypt_c25519), and its low-mem field arithmetic shares symbol
+ * names (fprime_*) with wolfCrypt's fe_low_mem.c, so pulling wolfCrypt's
+ * CURVE25519_SMALL implementation alongside it would collide at link time.
+ * wolfCrypt still provides HKDF + ChaCha20-Poly1305. */
+#include "c25519.h"
+#define COSE_ALG_RECIPIENT  (-25)   /* ECDH-ES + HKDF-256 */
+#endif
 
 #include <nanocbor/nanocbor.h>
 
@@ -51,7 +73,6 @@
 #include "suit_enc_seckey.h"
 
 #define COSE_ALG_CHACHA20_POLY1305  24
-#define COSE_ALG_ECDH_ES_HKDF_256  (-25)
 #define COSE_TAG_ENCRYPT            96
 #define COSE_HDR_IV                 5
 #define COSE_KEY_PARAM_EPHEMERAL   (-1)
@@ -64,14 +85,51 @@
 typedef struct {
     const uint8_t *body_protected;      /* serialized {1: 24} */
     size_t body_protected_len;
-    const uint8_t *recipient_protected; /* serialized {1: -25} */
+    const uint8_t *recipient_protected; /* serialized {1: COSE_ALG_RECIPIENT} */
     size_t recipient_protected_len;
     const uint8_t *nonce;               /* 12 bytes */
     const uint8_t *ciphertext;          /* without the trailing tag */
     size_t ciphertext_len;
     const uint8_t *auth_tag;            /* 16 bytes */
+#ifdef MODULE_WOLFCRYPT_MLKEM
+    const uint8_t *kem_ct;              /* ML-KEM encapsulation ciphertext */
+    size_t kem_ct_len;
+#else
     const uint8_t *ephemeral_pub;       /* 32 bytes */
+#endif
 } cose_encrypt_msg_t;
+
+/* Decode the alg (label 1) from a serialized protected-header map and check
+ * it is the one this firmware was built for */
+static int _check_recipient_alg(const uint8_t *protected_hdr, size_t len)
+{
+    nanocbor_value_t it, map;
+    nanocbor_decoder_init(&it, protected_hdr, len);
+    if (nanocbor_enter_map(&it, &map) < 0) {
+        return -1;
+    }
+    while (!nanocbor_at_end(&map)) {
+        int32_t key, alg;
+        if (nanocbor_get_int32(&map, &key) < 0) {
+            return -1;
+        }
+        if (key == 1) {
+            if (nanocbor_get_int32(&map, &alg) < 0) {
+                return -1;
+            }
+            if (alg != COSE_ALG_RECIPIENT) {
+                LOG_INFO("suit: recipient alg %" PRIi32 " != built-in %d\n",
+                         alg, COSE_ALG_RECIPIENT);
+                return -1;
+            }
+            return 0;
+        }
+        if (nanocbor_skip(&map) < 0) {
+            return -1;
+        }
+    }
+    return -1;
+}
 
 /* Fetch the value for `wanted` from a CBOR map, skipping other entries */
 static int _map_get_bstr(nanocbor_value_t *map, int32_t wanted,
@@ -95,10 +153,14 @@ static int _map_get_bstr(nanocbor_value_t *map, int32_t wanted,
 static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
                                cose_encrypt_msg_t *msg)
 {
-    nanocbor_value_t it, body, map, recipients, recipient, key_map;
+    nanocbor_value_t it, body, map, recipients, recipient;
+#ifndef MODULE_WOLFCRYPT_MLKEM
+    nanocbor_value_t key_map;
+    size_t eph_len;
+#endif
     uint32_t tag;
     const uint8_t *ct;
-    size_t ct_len, eph_len, nonce_len;
+    size_t ct_len, nonce_len;
 
     nanocbor_decoder_init(&it, buf, len);
     if (nanocbor_get_tag(&it, &tag) < 0 || tag != COSE_TAG_ENCRYPT) {
@@ -122,13 +184,29 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
     msg->ciphertext_len = ct_len - TAG_LEN;
     msg->auth_tag = ct + ct_len - TAG_LEN;
 
-    /* single recipient: [protected, {-1: COSE_Key}, h''] */
+    /* single recipient:
+     * X25519: [protected, {-1: COSE_Key}, h'']
+     * ML-KEM: [protected, {}, <KEM ciphertext>] */
     if (nanocbor_enter_array(&body, &recipients) < 0 ||
         nanocbor_enter_array(&recipients, &recipient) < 0 ||
         nanocbor_get_bstr(&recipient, &msg->recipient_protected,
                           &msg->recipient_protected_len) < 0) {
         return -1;
     }
+    if (_check_recipient_alg(msg->recipient_protected,
+                             msg->recipient_protected_len) < 0) {
+        return -1;
+    }
+#ifdef MODULE_WOLFCRYPT_MLKEM
+    if (nanocbor_skip(&recipient) < 0) {    /* unprotected map (empty) */
+        return -1;
+    }
+    if (nanocbor_get_bstr(&recipient, &msg->kem_ct, &msg->kem_ct_len) < 0 ||
+        msg->kem_ct_len != SUIT_MLKEM_CT_SIZE) {
+        return -1;
+    }
+    return 0;
+#else
     if (nanocbor_enter_map(&recipient, &map) < 0) {
         return -1;
     }
@@ -151,6 +229,7 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
         }
     }
     return -1;
+#endif
 }
 
 /* HKDF info: COSE_KDF_Context (RFC 9053 5.2), byte-identical to the host:
@@ -192,6 +271,46 @@ static int _build_enc_structure(const cose_encrypt_msg_t *msg,
     return *written <= out_len ? 0 : -1;
 }
 
+#ifdef MODULE_WOLFCRYPT_MLKEM
+static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
+{
+    int ret;
+    /* multi-KB struct: keep off the 4KB worker stack (see the ML-DSA
+     * .bss-corruption lesson in MLDSA_HARDWARE_FIXES.md) */
+    static MlKemKey key;
+    byte shared[WC_ML_KEM_SS_SZ];
+    uint8_t info[64];
+    size_t info_len;
+
+    if (_build_kdf_context(msg, info, sizeof(info), &info_len) < 0) {
+        return -1;
+    }
+
+    ret = wc_MlKemKey_Init(&key, SUIT_MLKEM_TYPE, NULL, INVALID_DEVID);
+    if (ret != 0) {
+        return ret;
+    }
+    /* deterministic expansion of the embedded 64-byte d||z seed — the same
+     * expansion the host's `cryptography` performs from private_bytes_raw().
+     * A tampered KEM ciphertext is not an error here: FIPS 203 implicit
+     * rejection yields a different shared secret, failing the AEAD tag. */
+    ret = wc_MlKemKey_MakeKeyWithRandom(&key, suit_enc_seckey,
+                                        sizeof(suit_enc_seckey));
+    if (ret == 0) {
+        ret = wc_MlKemKey_Decapsulate(&key, shared, msg->kem_ct,
+                                      (word32)msg->kem_ct_len);
+    }
+    if (ret == 0) {
+        ret = wc_HKDF(WC_SHA256, shared, sizeof(shared), NULL, 0,
+                      info, (word32)info_len,
+                      cek, CHACHA20_POLY1305_AEAD_KEYSIZE);
+    }
+
+    memset(shared, 0, sizeof(shared));
+    wc_MlKemKey_Free(&key);
+    return ret;
+}
+#else
 static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
 {
     int ret;
@@ -231,6 +350,7 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
     memset(shared, 0, sizeof(shared));
     return ret;
 }
+#endif
 
 int suit_manifest_decrypt(uint8_t *buf, size_t size,
                           const uint8_t **plaintext, size_t *plaintext_len)

@@ -8,30 +8,36 @@
 # directory for more details.
 #
 
-"""Emit a C header defining `suit_enc_seckey[32]` from an X25519 private key
-PEM file: the device's static key for SUIT manifest decryption (COSE
-ECDH-ES + HKDF-256). Raw bytes are RFC 7748 little-endian, matching the
-EC25519_LITTLE_ENDIAN imports in sys/suit/encrypt/decrypt.c.
+"""Emit a C header defining `suit_enc_seckey[N]` from the device's private
+key PEM for SUIT manifest decryption: X25519 (32 raw bytes, RFC 7748
+little-endian, matching sys/suit/encrypt/decrypt.c's c25519 usage) or
+ML-KEM-768/1024 (the 64-byte FIPS 203 d||z seed, re-expanded on-device via
+wc_MlKemKey_MakeKeyWithRandom).
 
 SECURITY: the private key ends up in the firmware image; prototype-grade
 key storage only."""
 
 import sys
 
+from cryptography.hazmat.primitives.asymmetric import mlkem
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+SUPPORTED = (X25519PrivateKey,
+             mlkem.MLKEM768PrivateKey, mlkem.MLKEM1024PrivateKey)
 
 
 def main():
     if len(sys.argv) != 2:
-        print("usage: enckey_to_header.py <x25519_private_key.pem>")
+        print("usage: enckey_to_header.py <private_key.pem>")
         sys.exit(1)
 
     with open(sys.argv[1], 'rb') as f:
         seckey = load_pem_private_key(f.read(), None)
 
-    if not isinstance(seckey, X25519PrivateKey):
-        sys.exit("suit: SUIT_ENC_SEC must be an X25519 private key")
+    if not isinstance(seckey, SUPPORTED):
+        sys.exit("suit: SUIT_ENC_SEC must be an X25519 or ML-KEM-768/1024 "
+                 "private key")
 
     raw = seckey.private_bytes_raw()
     print(f"const uint8_t suit_enc_seckey[{len(raw)}] = {{")

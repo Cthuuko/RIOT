@@ -37,6 +37,10 @@ board/driver code.
 | `MANIFEST_ENCRYPTION_PLAN.md` | Manifest-encryption feature plan + status checklist — resume work from the first unchecked step |
 | `MANIFEST_ENCRYPTION_CHANGES.md` | Manifest-encryption code-change summary: wire format, opt-out contract, per-file change list, verification results, gotchas |
 | `manifest-encryption/` | Standalone host-only interop example (Python `cryptography` encrypt ↔ wolfCrypt decrypt); its `encrypt_manifest.py` doubles as the host-side manifest encryption tool |
+| `MLKEM_ENCRYPTION_PLAN.md` | Post-quantum (ML-KEM-768/1024) manifest-encryption plan + status checklist, incl. the **measured 12-combo samr21 feasibility matrix** |
+| `MLKEM_ENCRYPTION_CHANGES.md` | ML-KEM code-change summary: selection contract, per-file changes, matrix, native64 verification, gotchas |
+| `manifest-encryption-mlkem/` | ML-KEM standalone interop example (both levels via `--level`/`-DMLKEM_LEVEL`); its `encrypt_manifest.py --key` is the host-side ML-KEM encryption tool |
+| `mlkem-feasibility-matrix-raw.txt` | Raw `size`/ld output of the 12 signing × encryption samr21 builds |
 | `native_steps.svg` | Diagram referenced by README.native.md |
 | `tests-with-config/` | Automated test configs |
 
@@ -217,6 +221,15 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   `MANIFEST_ENCRYPTION_CHANGES.md` (changes/gotchas),
   `MANIFEST_ENCRYPTION_PLAN.md` (status), `manifest-encryption/README.md`
   (wire format), `NATIVE_SETUP.md` steps 6b/9 (workflow).
+  **Post-quantum variant**: `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768|ml-kem-1024`
+  swaps the X25519 recipient for an ML-KEM encapsulation (compile-time
+  dispatch; private-use COSE algs -70768/-70769; device key = 64B FIPS 203
+  seed; needs OpenSSL 3.5+ and the local wolfssl checkout, auto-selected).
+  Verified E2E on native64. samr21 (measured): Ed25519+ML-KEM-768/1024
+  **fit** (6.5/5.0KB RAM spare); ML-DSA-44+ML-KEM-768 misses by 3,228B;
+  ML-DSA-65/87+KEM don't fit. Gotcha: tampered KEM ct fails via FIPS 203
+  implicit rejection (AEAD tag error, never a decaps error). See
+  `MLKEM_ENCRYPTION_PLAN.md` / `MLKEM_ENCRYPTION_CHANGES.md`.
 - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
 - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —

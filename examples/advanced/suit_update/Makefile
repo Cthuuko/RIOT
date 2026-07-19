@@ -73,13 +73,27 @@ endif
 # Manifest confidentiality: on by default, opt out with
 # SUIT_MANIFEST_ENCRYPT=0 (module selection must happen here, before
 # dependency resolution; key handling lives in makefiles/suit.base.inc.mk,
-# workflow in MANIFEST_ENCRYPTION_PLAN.md). The COSE_Encrypt wrapper adds
-# ~130B to the manifest (32B ephemeral key + 12B nonce + 16B tag + CBOR
-# framing), so grow the fetch buffer accordingly.
+# workflow in MANIFEST_ENCRYPTION_PLAN.md). SUIT_MANIFEST_ENCRYPT_ALGO
+# picks the key-establishment scheme: x25519 (default, classical) or
+# ml-kem-768 / ml-kem-1024 (post-quantum, MLKEM_ENCRYPTION_PLAN.md). The
+# COSE_Encrypt wrapper grows the fetch buffer accordingly: ~130B for
+# X25519 (32B ephemeral key + nonce + tag + framing), ~1.2/1.7KB for
+# ML-KEM (the encapsulation ciphertext dominates).
 SUIT_MANIFEST_ENCRYPT ?= 1
+SUIT_MANIFEST_ENCRYPT_ALGO ?= x25519
 ifeq (1,$(SUIT_MANIFEST_ENCRYPT))
   USEMODULE += suit_manifest_encrypt
-  SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 128)
+  ifneq (,$(filter ml-kem-%,$(SUIT_MANIFEST_ENCRYPT_ALGO)))
+    USEMODULE += wolfcrypt_mlkem
+    USEMODULE += wolfcrypt_mlkem$(subst ml-kem-,,$(SUIT_MANIFEST_ENCRYPT_ALGO))
+    ifeq (ml-kem-1024,$(SUIT_MANIFEST_ENCRYPT_ALGO))
+      SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1696)
+    else
+      SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1216)
+    endif
+  else
+    SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 128)
+  endif
 endif
 
 ifneq (640,$(SUIT_MANIFEST_BUFSIZE))
