@@ -1,338 +1,70 @@
-diff --git a/examples/advanced/suit_update/CLAUDE.md b/examples/advanced/suit_update/CLAUDE.md
-index 89f0ee19e7a08c485f309a081f26d70b024caf9c..5b806810c825a06a74d2e75c79de19b43366628a 100644
---- a/examples/advanced/suit_update/CLAUDE.md
-+++ b/examples/advanced/suit_update/CLAUDE.md
-@@ -226,7 +226,11 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
-   dispatch; private-use COSE algs -70768/-70769; device key = 64B FIPS 203
-   seed; needs OpenSSL 3.5+ and the local wolfssl checkout, auto-selected).
-   Verified E2E on native64. samr21 (measured): Ed25519+ML-KEM-768/1024
--  **fit** (6.5/5.0KB RAM spare); ML-DSA-44+ML-KEM-768 misses by 3,228B;
-+  **fit** (6.5/5.0KB RAM spare); **the full-PQ combo ML-DSA-44+ML-KEM-768
-+  also fits (1,160B spare)** thanks to the `suit_pq_scratch` union
-+  (sys/include/suit/pq_scratch.h + libcose patch 0003: the never-concurrent
-+  ML-DSA verify state and MlKemKey share one static allocation) plus an
-+  exact 3,904B manifest buffer; ML-DSA-44+ML-KEM-1024 links at a thin 296B;
-   ML-DSA-65/87+KEM don't fit. Gotcha: tampered KEM ct fails via FIPS 203
-   implicit rejection (AEAD tag error, never a decaps error). See
-   `MLKEM_ENCRYPTION_PLAN.md` / `MLKEM_ENCRYPTION_CHANGES.md`.
-diff --git a/examples/advanced/suit_update/MLKEM_ENCRYPTION_CHANGES.md b/examples/advanced/suit_update/MLKEM_ENCRYPTION_CHANGES.md
-index de9cf20a86510499888d981ff600f22190351629..1517b8ea96d530baa0c73726c385ede46861c92f 100644
---- a/examples/advanced/suit_update/MLKEM_ENCRYPTION_CHANGES.md
-+++ b/examples/advanced/suit_update/MLKEM_ENCRYPTION_CHANGES.md
-@@ -7,9 +7,11 @@ with a **post-quantum key-establishment alternative**: ML-KEM-768/1024
- default). Status: verified end-to-end on `native64` (Ed25519 signing +
- ML-KEM-768 encryption); samr21-xpro **link-level feasibility measured for
- all 12 signing × encryption combos** (table below), hardware E2E pending.
--The combined diff of the ML-KEM changes is kept as
--`mlkem-encryption-implementation.patch` in this directory (same convention
--as `manifest-encryption-implementation.patch` for the X25519 feature).
-+`mlkem-encryption-implementation.patch` in this directory holds the diff
-+of whatever ML-KEM work is not yet committed at regeneration time (same
-+convention as `manifest-encryption-implementation.patch` for the X25519
-+feature); currently that is the RAM-rework delta (pq_scratch union, exact
-+buffer, doc updates).
+diff --git a/examples/advanced/suit_update/NATIVE_SETUP.md b/examples/advanced/suit_update/NATIVE_SETUP.md
+index ae3dc178e5339b8bee78094467f60007588db2c9..7d768c188b1c0e4b0b3469715168ba6b8a49925c 100644
+--- a/examples/advanced/suit_update/NATIVE_SETUP.md
++++ b/examples/advanced/suit_update/NATIVE_SETUP.md
+@@ -99,6 +99,14 @@ and the container overhead (~92 bytes). It also drops `encrypted.h` /
+ `plaintext.h` / `device_*.h` helper headers into the current directory
+ (standalone-example artifacts, safe to delete here).
  
- ## What changes vs. the X25519 variant
++**Post-quantum variant**: build with
++`SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` (or `ml-kem-1024`) and encrypt with
++`examples/advanced/suit_update/manifest-encryption-mlkem/encrypt_manifest.py
++--key keys/device_mlkem768.pem ...` instead — same flow, ~1144-byte
++overhead, verified on native64 (see `MLKEM_ENCRYPTION_CHANGES.md`). The
++firmware accepts exactly the scheme it was built for and logs a clear
++`recipient alg X != built-in Y` for the other one.
++
+ ## 7. Trigger the update from the RIOT shell
  
-@@ -66,19 +68,43 @@ ML-KEM), triggered automatically by `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-%`.
- | Signing \ Encryption | X25519 | ML-KEM-768 | ML-KEM-1024 |
- |---|---|---|---|
- | Ed25519 | ✅ 102,492 t / 21,160 RAM (11.6 KB spare) | ✅ 114,144 t / 26,264 RAM (6.5 KB spare) | ✅ 113,952 t / 27,768 RAM (5.0 KB spare) |
--| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (1.9 KB spare) | ❌ overflow 3,228 B | ❌ overflow 4,732 B |
--| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (88 B spare) | ❌ overflow 5,020 B | ❌ overflow 6,524 B |
-+| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (1.9 KB spare) | ✅ **120,292 t / 31,608 RAM (1,160 B spare)** — after the RAM rework below (pre-rework: ❌ overflow 3,228 B) | ✅ 120,132 t / 32,472 RAM (296 B spare — links, but treat as experimental) after the rework (pre: ❌ 4,732 B) |
-+| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (88 B spare) | ❌ overflow ~5 KB even with the rework's ~4.4 KB | ❌ overflow 6,524 B |
- | ML-DSA-87 | ❌ overflow 3,756 B | ❌ overflow 8,860 B | ❌ overflow 10,364 B |
+ ```
+diff --git a/examples/advanced/suit_update/SAMR21_EXAMPLES.md b/examples/advanced/suit_update/SAMR21_EXAMPLES.md
+index e62f03754cf49589238553b491ccd78cf2acf05e..cc949f2d6482409103c731970c340f29862df9a5 100644
+--- a/examples/advanced/suit_update/SAMR21_EXAMPLES.md
++++ b/examples/advanced/suit_update/SAMR21_EXAMPLES.md
+@@ -412,7 +412,10 @@ SUIT_KEY_DIR=~/masterthesis/RIOT/examples/advanced/suit_update/mldsa87-keys \
+ This build embeds wolfCrypt's ML-DSA-87 verifier and
+ `SUIT_MANIFEST_BUFSIZE=5376` (bigger than B's 3840). **This fails to link**,
+ as shown above — `region ram overflowed by 3628 bytes` — before it ever
+-reaches the board. This isn't a sign something else is broken; it's
++reaches the board. (That 3,628 figure predates default-on manifest
++encryption; with today's default `SUIT_MANIFEST_ENCRYPT=1` the overflow is
++3,756 B — the extra 128 B buffer pad — and `SUIT_MANIFEST_ENCRYPT=0`
++reproduces the original number. Either way: no fit.) This isn't a sign something else is broken; it's
+ `MLDSA_MULTILEVEL_CHANGES.md`'s predicted RAM shortfall confirmed exactly.
+ Shrinking `.bss` by ~3.6KB would need the same kind of stack/heap surgery
+ documented in [MLDSA_HARDWARE_FIXES.md](MLDSA_HARDWARE_FIXES.md) for
+@@ -472,16 +475,26 @@ before parsing. It is **on by default** in this app's build
+ (`SUIT_MANIFEST_ENCRYPT=1`), so A/B/C flashes are already
+ encryption-capable — Example E only changes what gets *published*.
  
--Takeaways: **Ed25519 + ML-KEM-768/1024 fit with kilobytes to spare** (the
--recommended PQ-confidentiality demos); the full-PQ goal
--**ML-DSA-44 + ML-KEM-768 misses by only 3,228 B** — candidate mitigations:
--union the never-concurrent ML-DSA verify state and `MlKemKey` into one
--static workspace, shrink GNRC pktbuf, exact buffer values. ML-DSA-65
--survives only with X25519 (88 B spare — matching
--`MLDSA_HARDWARE_FIXES.md`'s ~216 B baseline minus the +128 B buffer pad).
--Flash never binds (≤116.7 KB text). Link-level verdicts only — hardware
--E2E for the fitting combos is plan Step 5b's remaining half.
-+Takeaways: **Ed25519 + ML-KEM-768/1024 fit with kilobytes to spare**, and
-+after the RAM rework the **full-PQ combo ML-DSA-44 + ML-KEM-768 fits with
-+1,160 B spare** (ML-DSA-44 + ML-KEM-1024 links too, at a thin 296 B).
-+ML-DSA-65 survives only with X25519 (88 B spare); ML-DSA-87 remains a
-+dead end. Flash never binds (≤120.3 KB text). Link-level verdicts —
-+hardware E2E for the fitting combos is plan Step 5b's remaining half.
-+
-+## RAM rework: fitting ML-DSA-44 + ML-KEM-768 (recovered 4,388 B)
-+
-+Two levers (a third — `CONFIG_GNRC_PKTBUF_SIZE=4096`, +2 KB — is wired as
-+a commented-out reserve in the app Makefile):
-+
-+1. **`suit_pq_scratch` union** (`sys/include/suit/pq_scratch.h`, definition
-+   in `sys/suit/encrypt/decrypt.c`, consumed by pkg/libcose patch
-+   `0003-cose-crypto-share-ML-DSA-verify-state-with-RIOT-s-PQ.patch`): the
-+   static ML-DSA verify state and the static `MlKemKey` are **never live
-+   concurrently** (decryption completes, key freed, before `suit_parse()`
-+   starts signature verification — one worker thread), so they share one
-+   allocation. Active only when both wolfcrypt modules are compiled
-+   (`SUIT_PQ_SCRATCH_SHARED`); every single-scheme build keeps its own
-+   private static and is **byte-identical** to before (verified: mldsa44/65
-+   + x25519, ed25519 + ml-kem-768, mldsa44 with encryption off).
-+   Measured: union = 9,344 B = `sizeof(MlDsaKey)`; the ~4 KB `MlKemKey`
-+   overlays for free.
-+2. **Exact manifest buffer** for the combo: `SUIT_MANIFEST_BUFSIZE=3904`
-+   (the encrypted ML-DSA-44 manifest measures exactly 3,776 B + 128 B
-+   margin) instead of the additive 3072+1216 → +384 B.
-+
-+Functional verification on native64: **two consecutive** ML-DSA-44-signed,
-+ML-KEM-768-encrypted updates in one process — each cycle exercises both
-+union members back-to-back (decrypt writes the scratch, then verify
-+overwrites it) — both ended in `suit_worker: update successful` with the
-+payload installed; no state leakage between the overlaid users.
+-**Expected RAM feasibility** (from `MANIFEST_ENCRYPTION_PLAN.md`; the
+-decrypt code adds ChaCha20-Poly1305 + HKDF flash but reuses the c25519
+-curve code already linked for Ed25519, and the manifest buffer grows 128B):
++**Measured RAM feasibility** (link-level, from the 12-combo matrix in
++`MLKEM_ENCRYPTION_CHANGES.md` / `mlkem-feasibility-matrix-raw.txt` — all
++X25519-encryption builds link except on top of D; RAM out of 32,768 B):
  
- ## Verification (native64, 2026-07-19)
+-| Base example | Expectation on samr21-xpro |
++| Base example | Measured on samr21-xpro (X25519 encryption) |
+ |---|---|
+-| E on top of A (Ed25519) | **recommended first target** — ample headroom |
+-| E on top of C (ML-DSA-44) | plausible — C had headroom to spare |
+-| E on top of B (ML-DSA-65) | at risk — B had only ~216B RAM slack; +128B buffer leaves ≲90B, expect possible `.bss` overflow at link |
+-| E on top of D (ML-DSA-87) | out of the question — D already fails to link |
++| E on top of A (Ed25519) | ✅ fits, 21,160 B RAM (**11.6 KB spare**) — recommended first target |
++| E on top of C (ML-DSA-44) | ✅ fits, 30,888 B RAM (1.9 KB spare) |
++| E on top of B (ML-DSA-65) | ✅ **links**, 32,680 B RAM (**88 B spare** — tighter than B's ~216 B baseline; expect zero tolerance for any growth, treat runtime stability as unproven until tested) |
++| E on top of D (ML-DSA-87) | ❌ `.bss` overflow 3,756 B (D already fails plain) |
++
++**Post-quantum encryption variant**: `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768`
++(or `ml-kem-1024`) replaces the X25519 recipient with an ML-KEM
++encapsulation — including the **full-PQ combo C + ML-KEM-768, which fits
++with 1,160 B spare** thanks to the `suit_pq_scratch` union (the host-side
++encrypt step then uses `manifest-encryption-mlkem/encrypt_manifest.py
++--key $SUIT_KEY_DIR/device_mlkem768.pem`). Same walkthrough shape;
++details, measured sizes, and gotchas in `MLKEM_ENCRYPTION_CHANGES.md` —
++equally **unverified on hardware** until this section's E.9 checklist has
++been run for it.
  
-diff --git a/examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md b/examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md
-index 7a90b205b142264ce69587b08e24d3255b5df137..54bad6d9bdc16b63e2c684643dcc2cfd0c32b6cc 100644
---- a/examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md
-+++ b/examples/advanced/suit_update/MLKEM_ENCRYPTION_PLAN.md
-@@ -83,18 +83,17 @@ Per-combo added RAM when swapping X25519 → ML-KEM (all static/.bss unless note
- | Signing \ Encryption | X25519 | ML-KEM-768 | ML-KEM-1024 |
- |---|---|---|---|
- | Ed25519 | ✅ 102,492 t / 21,160 RAM (**11.6 KB spare**) | ✅ 114,144 t / 26,264 RAM (**6.5 KB spare**) | ✅ 113,952 t / 27,768 RAM (**5.0 KB spare**) |
--| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (**1.9 KB spare**) | ❌ overflow **3,228 B** | ❌ overflow 4,732 B |
--| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (**88 B spare** — exactly the predicted ≲90 B) | ❌ overflow 5,020 B | ❌ overflow 6,524 B |
-+| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (**1.9 KB spare**) | ✅ **31,608 RAM (1,160 B spare)** after the pq_scratch rework (was ❌ 3,228 B over) | ✅ 32,472 RAM (296 B spare, experimental) after the rework (was ❌ 4,732 B over) |
-+| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (**88 B spare** — exactly the predicted ≲90 B) | ❌ still ~0.6 KB+ over even post-rework | ❌ overflow 6,524 B |
- | ML-DSA-87 | ❌ overflow 3,756 B | ❌ overflow 8,860 B | ❌ overflow 10,364 B |
+ ## E.0 — Prerequisite
  
- Conclusions:
- 
--- **Ed25519 + ML-KEM-768/1024 both fit comfortably** — classical-signature + PQ-confidentiality works on this board at link level; hardware E2E is the remaining check. (Curious but consistent artifact: the 1024 build's text is marginally *smaller* than 768's — parameter-set-specific code paths.)
--- **The full-PQ combo (ML-DSA-44 + ML-KEM-768) misses by 3,228 B** — the closest failure. Mitigation candidates, in order: share one static crypto workspace between the never-concurrent ML-DSA verify state (~10 KB class) and `MlKemKey` (union), shrink GNRC pktbuf, exact buffer values. 3.2 KB is plausibly recoverable via the union alone.
--- ML-DSA-65/87 + any KEM, and ML-DSA-87 + anything, are confirmed dead ends on 32 KB RAM (documented like Example D).
--- Flash is never the binding constraint (max 116.7 KB text).
-+- **Ed25519 + ML-KEM-768/1024 both fit comfortably**; after the RAM rework (see `MLKEM_ENCRYPTION_CHANGES.md` "RAM rework": `suit_pq_scratch` union overlaying the never-concurrent ML-DSA verify state and `MlKemKey` [recovers ~4 KB], + exact 3,904 B manifest buffer [+384 B]) the **full-PQ combo ML-DSA-44 + ML-KEM-768 fits with 1,160 B spare** — verified by double-update E2E on native64. The reserve lever (`CONFIG_GNRC_PKTBUF_SIZE=4096`, +2 KB) stays commented out in the app Makefile.
-+- ML-DSA-65/87 + any KEM remain dead ends on 32 KB RAM (documented like Example D).
-+- Flash is never the binding constraint (max 120.3 KB text).
- 
--Raw ld/size output for all 12 combos: see `MLKEM_ENCRYPTION_CHANGES.md`.
-+Raw ld/size output (original 12 + post-rework re-measurements): `mlkem-feasibility-matrix-raw.txt`, summarized in `MLKEM_ENCRYPTION_CHANGES.md`.
- 
- ## Later steps (outline — not this round)
- 
-diff --git a/examples/advanced/suit_update/Makefile b/examples/advanced/suit_update/Makefile
-index 1af7967cf2c3807b5025bb81b283dad7cf9a0a55..1b8fb0ebe13bf1dd969e558696b019283700b73f 100644
---- a/examples/advanced/suit_update/Makefile
-+++ b/examples/advanced/suit_update/Makefile
-@@ -86,7 +86,16 @@ ifeq (1,$(SUIT_MANIFEST_ENCRYPT))
-   ifneq (,$(filter ml-kem-%,$(SUIT_MANIFEST_ENCRYPT_ALGO)))
-     USEMODULE += wolfcrypt_mlkem
-     USEMODULE += wolfcrypt_mlkem$(subst ml-kem-,,$(SUIT_MANIFEST_ENCRYPT_ALGO))
--    ifeq (ml-kem-1024,$(SUIT_MANIFEST_ENCRYPT_ALGO))
-+    ifeq (ml-dsa-44/ml-kem-768,$(SUIT_KEY_ALGO)/$(SUIT_MANIFEST_ENCRYPT_ALGO))
-+      # The full-PQ combo is squeezed into samr21-xpro's 32KB RAM (together
-+      # with the suit_pq_scratch union, see sys/include/suit/pq_scratch.h):
-+      # exact measured need instead of the additive 3072+1216 - a 2632B
-+      # ML-DSA-44 manifest + 1144B COSE_Encrypt/KEM overhead + 128B margin.
-+      SUIT_MANIFEST_BUFSIZE := 3904
-+      # Reserve lever if RAM gets tight again (e.g. bigger app): SUIT's 64B
-+      # CoAP blocks don't need the default 6KB of pktbuf.
-+      # CFLAGS += -DCONFIG_GNRC_PKTBUF_SIZE=4096
-+    else ifeq (ml-kem-1024,$(SUIT_MANIFEST_ENCRYPT_ALGO))
-       SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1696)
-     else
-       SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1216)
-diff --git a/examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt b/examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt
-index f2e8c682495df1353778ed2aaacd4d2b47c37369..c0b5759e78e583de2d19b9218f0ddbfd1628f839 100644
---- a/examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt
-+++ b/examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt
-@@ -68,3 +68,21 @@ collect2: error: ld returned 1 exit status
- make: *** [/home/kuuko/masterthesis/RIOT/makefiles/boot/riotboot.mk:30: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf] Error 1
- 
- MATRIX DONE
-+
-+########################################################################
-+# Post pq_scratch-union + exact-buffer rework (2026-07-19, see
-+# MLKEM_ENCRYPTION_CHANGES.md "RAM rework" section). Re-measured combos:
-+########################################################################
-+
-+=== SIG=ml-dsa-44 ENC=ml-kem-768 (union + SUIT_MANIFEST_BUFSIZE=3904) ===
-+   text	   data	    bss	    dec	    hex	filename
-+ 120292	    260	  31348	 151900	  2515c	suit_update.elf   (RAM 31,608/32,768 -> 1,160 B spare; was overflow 3,228)
-+ suit_pq_scratch union: 0x2480 = 9,344 B (= sizeof(MlDsaKey); MlKemKey overlaid free)
-+
-+=== SIG=ml-dsa-44 ENC=ml-kem-1024 (union, additive buffer) ===
-+   text	   data	    bss	    dec	    hex	filename
-+ 120132	    260	  32212	 152604	  2541c	suit_update.elf   (RAM 32,472/32,768 -> 296 B spare; was overflow 4,732)
-+
-+=== regressions (unchanged vs. pre-union matrix) ===
-+ mldsa44+x25519: 116100/260/30628  | mldsa65+x25519: 116708/260/32420 (88 B spare)
-+ ed25519+mlkem768: 114144/260/26004 | mldsa44 plain (encrypt=0): 105412/260/30500
-diff --git a/pkg/libcose/patches/0003-cose-crypto-share-ML-DSA-verify-state-with-RIOT-s-PQ.patch b/pkg/libcose/patches/0003-cose-crypto-share-ML-DSA-verify-state-with-RIOT-s-PQ.patch
-new file mode 100644
-index 0000000000000000000000000000000000000000..f32a4e350a268d4a86e2b1990d611e00ef2c24ae
-GIT binary patch
-literal 1772
-zcmaJ>ZFAx_5dN-Tv2*vK5U{a%3r9Pha7nI736oq%+YfEWBjh!xktJ%$;ke0<?@ExD
-z%Qf+U8MM-~tKH{$K2@d!KFkmKa3L_s#ULLHdxLJ8rak0`Ns){=1^dHM$`hCw4Rc&W
-zdI(7}4j<?yNy<JE%ot{JS)+nUC8Sauek#NN+e%tz)+@eSK3bMss#uuvXLiCJj$vNw
-zHl!cm*IE%;cL?clJQ$68DYOzoXY+dT4+=MiKd&Y?$7g?oFcv$a+OC}$gC$^u*+q0R
-zpTHefve<%k1PmMLR&afOdGmvXtIuFX#hq9&sI@eju|HO*LzwW&wNz+fVd#Wgy@XqE
-zaf><!PG3qiJ)Ob)xAPlTaxDwA4ss0D5NtafcN+s`t(=UeA44%x>}s;0k!qxj_=UOx
-zQZpw@ga`~RE57x|OSqH#p>SJEm#zQJ_SNr-2WP<YJ7iXVMN>3pYKr9)w@okw#0zVI
-z2G#3MKStM+88}`o(b<?qQN+MjV%NLQ#;79Hos}xLJQi>dAE5Q{Fi4@Gwt!f1y~Mmt
-zL8&cPj_zq2ttMl+EDDICrF6hMZvijfiZZEl`~v;7DDrd^$K7r(9dH3@k_`KOU-jGQ
-zj4Fn=GaMa3)J@t$Xwmx+j*b|-ms+SgM|kJyl;v1RjW%Ardl}j@?e)lajU<fL6TF{b
-z=V^ig$LA=BHa=(GIGg-_noTZ#xy)u4#NvLx3HSG}MTdhB{fmKrUV#`LHkrS3FQwbI
-zdfj$92$zNfSfZ{etJ=aHS271Hmzuk}BKj93%$<a!;C{-@80I7;Vz0DBxWbFo6CVgC
-zNNvB5=tg*f*;TCr`@D**)Jx(|pzy|2w?urms*vX~oI3&}@&>5FC}lP_NJn|Hk}~#!
-zUh|5V=;)+H_aM}qct{HH{5|$A5W_*ocf6o(gaWgx&)NL=+Pg(IKbu^ip0HNu04|?2
-z_N`MG54U%U;3xSr!`Mr%!Id>oTg+LDuD{qmw}R+@tzff~VzpO%=!-B~)K!JrQM<f7
-z1*pdfeACk=nL>ra`@*hOujo8LJZgPmc$Hfk8{*@Iwzjk9dgnVX?pwE`5$ud0yTvUu
-zUKmdtJfcZ$MrCPi-eQRtGj(D)InT4BKl(kItbxJfHkub?fic@%j)q?$lHt-++cu4|
-z%6nZ{*9*#>Db(#9y#vQzzNm{tkf2(>+ra_-v}wUF6Sv*SulcUF$vl8{<6b{b8T${9
-C=s_O<
-
-literal 0
-HcmV?d00001
-
-diff --git a/sys/include/suit/pq_scratch.h b/sys/include/suit/pq_scratch.h
-new file mode 100644
-index 0000000000000000000000000000000000000000..9826fa6247d64c1ef3a66980e0daa890f71b4fad
---- /dev/null
-+++ b/sys/include/suit/pq_scratch.h
-@@ -0,0 +1,66 @@
-+/*
-+ * Copyright (C) 2026 Miguel Arcilla
-+ *
-+ * This file is subject to the terms and conditions of the GNU Lesser
-+ * General Public License v2.1. See the file LICENSE in the top level
-+ * directory for more details.
-+ */
-+
-+/**
-+ * @ingroup     sys_suit
-+ * @brief       Shared static workspace for the post-quantum SUIT crypto
-+ *
-+ * When a firmware carries both the ML-DSA signature verifier (multi-KB
-+ * static `MlDsaKey` verify state, see pkg/libcose's wolfcrypt_mldsa
-+ * backend) and ML-KEM manifest decryption (multi-KB static `MlKemKey`,
-+ * see sys/suit/encrypt/decrypt.c), the two never run concurrently:
-+ * `suit_handle_manifest_buf()` finishes decryption — CEK derived, key
-+ * state freed — before `suit_parse()` starts signature verification, all
-+ * on the single SUIT worker thread. Overlaying them in one union recovers
-+ * `sizeof(MlKemKey)` (~3.4 KB) of .bss — the difference between fitting
-+ * and not fitting ML-DSA-44 + ML-KEM-768 in samr21-xpro's 32 KB RAM.
-+ *
-+ * The union is only declared when BOTH wolfcrypt modules are compiled in;
-+ * single-scheme builds keep their own private static objects. The object
-+ * itself is defined in sys/suit/encrypt/decrypt.c (always compiled when
-+ * ML-KEM manifest decryption is).
-+ *
-+ * @{
-+ *
-+ * @file
-+ * @author      Miguel Arcilla <miguelkristopharcilla@gmail.com>
-+ */
-+#ifndef SUIT_PQ_SCRATCH_H
-+#define SUIT_PQ_SCRATCH_H
-+
-+#ifdef __cplusplus
-+extern "C" {
-+#endif
-+
-+#if defined(MODULE_WOLFCRYPT_MLDSA) && defined(MODULE_WOLFCRYPT_MLKEM)
-+
-+#define SUIT_PQ_SCRATCH_SHARED 1
-+
-+#include <wolfssl/wolfcrypt/settings.h>
-+#include <wolfssl/wolfcrypt/dilithium.h>
-+#include <wolfssl/wolfcrypt/wc_mlkem.h>
-+
-+/**
-+ * @brief   One static allocation shared by the (never concurrent) ML-DSA
-+ *          verify and ML-KEM decapsulation states
-+ */
-+union suit_pq_scratch {
-+    MlDsaKey mldsa;     /**< signature-verify state (libcose backend) */
-+    MlKemKey mlkem;     /**< manifest-decryption state (suit encrypt module) */
-+};
-+
-+extern union suit_pq_scratch suit_pq_scratch;
-+
-+#endif /* MODULE_WOLFCRYPT_MLDSA && MODULE_WOLFCRYPT_MLKEM */
-+
-+#ifdef __cplusplus
-+}
-+#endif
-+
-+#endif /* SUIT_PQ_SCRATCH_H */
-+/** @} */
-diff --git a/sys/suit/encrypt/decrypt.c b/sys/suit/encrypt/decrypt.c
-index e0c14e851a976b8063cb85b3975952dd9d229b52..e2c82247fc3bd4fc9634fea67b6c8dbc9812a7cd 100644
---- a/sys/suit/encrypt/decrypt.c
-+++ b/sys/suit/encrypt/decrypt.c
-@@ -44,6 +44,7 @@
-  * COSE alg IDs (no IANA registration for ML-KEM yet), matching the
-  * manifest-encryption-mlkem host tooling. */
- #include <wolfssl/wolfcrypt/wc_mlkem.h>
-+#include "suit/pq_scratch.h"
- #if defined(MODULE_WOLFCRYPT_MLKEM1024)
-     #define SUIT_MLKEM_TYPE     WC_ML_KEM_1024
-     #define COSE_ALG_RECIPIENT  (-70769)
-@@ -272,12 +273,23 @@ static int _build_enc_structure(const cose_encrypt_msg_t *msg,
- }
- 
- #ifdef MODULE_WOLFCRYPT_MLKEM
-+#ifdef SUIT_PQ_SCRATCH_SHARED
-+/* overlay the decapsulation state onto the ML-DSA verify state — they are
-+ * never live at the same time (decrypt completes before verify starts on
-+ * the same worker thread), and the sharing recovers sizeof(MlKemKey) of
-+ * .bss on 32KB-RAM boards; see sys/include/suit/pq_scratch.h */
-+union suit_pq_scratch suit_pq_scratch;
-+#define _mlkem_state (suit_pq_scratch.mlkem)
-+#else
-+/* multi-KB struct: keep off the 4KB worker stack (see the ML-DSA
-+ * .bss-corruption lesson in MLDSA_HARDWARE_FIXES.md) */
-+static MlKemKey _mlkem_state;
-+#endif
-+
- static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
- {
-     int ret;
--    /* multi-KB struct: keep off the 4KB worker stack (see the ML-DSA
--     * .bss-corruption lesson in MLDSA_HARDWARE_FIXES.md) */
--    static MlKemKey key;
-+    MlKemKey *key = &_mlkem_state;
-     byte shared[WC_ML_KEM_SS_SZ];
-     uint8_t info[64];
-     size_t info_len;
-@@ -286,7 +298,7 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
-         return -1;
-     }
- 
--    ret = wc_MlKemKey_Init(&key, SUIT_MLKEM_TYPE, NULL, INVALID_DEVID);
-+    ret = wc_MlKemKey_Init(key, SUIT_MLKEM_TYPE, NULL, INVALID_DEVID);
-     if (ret != 0) {
-         return ret;
-     }
-@@ -294,10 +306,10 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
-      * expansion the host's `cryptography` performs from private_bytes_raw().
-      * A tampered KEM ciphertext is not an error here: FIPS 203 implicit
-      * rejection yields a different shared secret, failing the AEAD tag. */
--    ret = wc_MlKemKey_MakeKeyWithRandom(&key, suit_enc_seckey,
-+    ret = wc_MlKemKey_MakeKeyWithRandom(key, suit_enc_seckey,
-                                         sizeof(suit_enc_seckey));
-     if (ret == 0) {
--        ret = wc_MlKemKey_Decapsulate(&key, shared, msg->kem_ct,
-+        ret = wc_MlKemKey_Decapsulate(key, shared, msg->kem_ct,
-                                       (word32)msg->kem_ct_len);
-     }
-     if (ret == 0) {
-@@ -307,7 +319,7 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
-     }
- 
-     memset(shared, 0, sizeof(shared));
--    wc_MlKemKey_Free(&key);
-+    wc_MlKemKey_Free(key);
-     return ret;
- }
- #else

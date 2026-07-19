@@ -412,7 +412,10 @@ SUIT_KEY_DIR=~/masterthesis/RIOT/examples/advanced/suit_update/mldsa87-keys \
 This build embeds wolfCrypt's ML-DSA-87 verifier and
 `SUIT_MANIFEST_BUFSIZE=5376` (bigger than B's 3840). **This fails to link**,
 as shown above — `region ram overflowed by 3628 bytes` — before it ever
-reaches the board. This isn't a sign something else is broken; it's
+reaches the board. (That 3,628 figure predates default-on manifest
+encryption; with today's default `SUIT_MANIFEST_ENCRYPT=1` the overflow is
+3,756 B — the extra 128 B buffer pad — and `SUIT_MANIFEST_ENCRYPT=0`
+reproduces the original number. Either way: no fit.) This isn't a sign something else is broken; it's
 `MLDSA_MULTILEVEL_CHANGES.md`'s predicted RAM shortfall confirmed exactly.
 Shrinking `.bss` by ~3.6KB would need the same kind of stack/heap surgery
 documented in [MLDSA_HARDWARE_FIXES.md](MLDSA_HARDWARE_FIXES.md) for
@@ -472,16 +475,26 @@ before parsing. It is **on by default** in this app's build
 (`SUIT_MANIFEST_ENCRYPT=1`), so A/B/C flashes are already
 encryption-capable — Example E only changes what gets *published*.
 
-**Expected RAM feasibility** (from `MANIFEST_ENCRYPTION_PLAN.md`; the
-decrypt code adds ChaCha20-Poly1305 + HKDF flash but reuses the c25519
-curve code already linked for Ed25519, and the manifest buffer grows 128B):
+**Measured RAM feasibility** (link-level, from the 12-combo matrix in
+`MLKEM_ENCRYPTION_CHANGES.md` / `mlkem-feasibility-matrix-raw.txt` — all
+X25519-encryption builds link except on top of D; RAM out of 32,768 B):
 
-| Base example | Expectation on samr21-xpro |
+| Base example | Measured on samr21-xpro (X25519 encryption) |
 |---|---|
-| E on top of A (Ed25519) | **recommended first target** — ample headroom |
-| E on top of C (ML-DSA-44) | plausible — C had headroom to spare |
-| E on top of B (ML-DSA-65) | at risk — B had only ~216B RAM slack; +128B buffer leaves ≲90B, expect possible `.bss` overflow at link |
-| E on top of D (ML-DSA-87) | out of the question — D already fails to link |
+| E on top of A (Ed25519) | ✅ fits, 21,160 B RAM (**11.6 KB spare**) — recommended first target |
+| E on top of C (ML-DSA-44) | ✅ fits, 30,888 B RAM (1.9 KB spare) |
+| E on top of B (ML-DSA-65) | ✅ **links**, 32,680 B RAM (**88 B spare** — tighter than B's ~216 B baseline; expect zero tolerance for any growth, treat runtime stability as unproven until tested) |
+| E on top of D (ML-DSA-87) | ❌ `.bss` overflow 3,756 B (D already fails plain) |
+
+**Post-quantum encryption variant**: `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768`
+(or `ml-kem-1024`) replaces the X25519 recipient with an ML-KEM
+encapsulation — including the **full-PQ combo C + ML-KEM-768, which fits
+with 1,160 B spare** thanks to the `suit_pq_scratch` union (the host-side
+encrypt step then uses `manifest-encryption-mlkem/encrypt_manifest.py
+--key $SUIT_KEY_DIR/device_mlkem768.pem`). Same walkthrough shape;
+details, measured sizes, and gotchas in `MLKEM_ENCRYPTION_CHANGES.md` —
+equally **unverified on hardware** until this section's E.9 checklist has
+been run for it.
 
 ## E.0 — Prerequisite
 

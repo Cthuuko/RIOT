@@ -99,6 +99,14 @@ and the container overhead (~92 bytes). It also drops `encrypted.h` /
 `plaintext.h` / `device_*.h` helper headers into the current directory
 (standalone-example artifacts, safe to delete here).
 
+**Post-quantum variant**: build with
+`SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` (or `ml-kem-1024`) and encrypt with
+`examples/advanced/suit_update/manifest-encryption-mlkem/encrypt_manifest.py
+--key keys/device_mlkem768.pem ...` instead — same flow, ~1144-byte
+overhead, verified on native64 (see `MLKEM_ENCRYPTION_CHANGES.md`). The
+firmware accepts exactly the scheme it was built for and logs a clear
+`recipient alg X != built-in Y` for the other one.
+
 ## 7. Trigger the update from the RIOT shell
 
 ```
