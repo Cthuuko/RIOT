@@ -12,7 +12,10 @@
  *
  * @file
  * @brief       SUIT manifest decryption (COSE_Encrypt, X25519 + HKDF-SHA256 +
- *              ChaCha20-Poly1305 via wolfCrypt)
+ *              ChaCha20-Poly1305 via wolfCrypt), plus the container-parsing /
+ *              CEK-derivation primitives shared with the streaming
+ *              firmware-payload decryption (payload_decrypt.c, see
+ *              encrypt_internal.h)
  *
  * Device-side counterpart of dist tooling's encrypt step; the wire format
  * and the byte-exact KDF-context/AAD rules are documented in
@@ -35,6 +38,8 @@
 #include <wolfssl/wolfcrypt/kdf.h>
 #include <wolfssl/wolfcrypt/chacha20_poly1305.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
+
+#include "encrypt_internal.h"
 
 #ifdef MODULE_WOLFCRYPT_MLKEM
 /* Post-quantum variant (SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768|ml-kem-1024):
@@ -81,24 +86,6 @@
 
 #define NONCE_LEN  CHACHA20_POLY1305_AEAD_IV_SIZE      /* 12 */
 #define TAG_LEN    CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE /* 16 */
-
-/* Parsed fields of the COSE_Encrypt container (pointers into the buffer) */
-typedef struct {
-    const uint8_t *body_protected;      /* serialized {1: 24} */
-    size_t body_protected_len;
-    const uint8_t *recipient_protected; /* serialized {1: COSE_ALG_RECIPIENT} */
-    size_t recipient_protected_len;
-    const uint8_t *nonce;               /* 12 bytes */
-    const uint8_t *ciphertext;          /* without the trailing tag */
-    size_t ciphertext_len;
-    const uint8_t *auth_tag;            /* 16 bytes */
-#ifdef MODULE_WOLFCRYPT_MLKEM
-    const uint8_t *kem_ct;              /* ML-KEM encapsulation ciphertext */
-    size_t kem_ct_len;
-#else
-    const uint8_t *ephemeral_pub;       /* 32 bytes */
-#endif
-} cose_encrypt_msg_t;
 
 /* Decode the alg (label 1) from a serialized protected-header map and check
  * it is the one this firmware was built for */
@@ -151,8 +138,25 @@ static int _map_get_bstr(nanocbor_value_t *map, int32_t wanted,
     return -1;
 }
 
-static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
-                               cose_encrypt_msg_t *msg)
+/* Drain a container iterator to its end so nanocbor_leave_container()
+ * advances the parent cursor correctly (leave uses the child's cursor) */
+static int _drain(nanocbor_value_t *container)
+{
+    while (!nanocbor_at_end(container)) {
+        if (nanocbor_skip(container) < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Full-unwind COSE_Encrypt parser: nanocbor_skip() does not descend into
+ * tagged items, and leave_container() needs drained children — walking and
+ * draining every container is the only way to learn the exact encoded
+ * length (needed by the detached/streaming payload container) and doubles
+ * as a completeness check for retry-parsing of streamed headers. */
+ssize_t suit_cose_encrypt_parse(const uint8_t *buf, size_t len,
+                                cose_encrypt_msg_t *msg)
 {
     nanocbor_value_t it, body, map, recipients, recipient;
 #ifndef MODULE_WOLFCRYPT_MLKEM
@@ -174,16 +178,29 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
     }
     if (nanocbor_enter_map(&body, &map) < 0 ||
         _map_get_bstr(&map, COSE_HDR_IV, &msg->nonce, &nonce_len) < 0 ||
-        nonce_len != NONCE_LEN) {
+        nonce_len != NONCE_LEN || _drain(&map) < 0) {
         return -1;
     }
     nanocbor_leave_container(&body, &map);
-    if (nanocbor_get_bstr(&body, &ct, &ct_len) < 0 || ct_len < TAG_LEN) {
+
+    /* ciphertext slot: bstr = attached (manifest container),
+     * null = detached (firmware-payload container, streams after header) */
+    if (nanocbor_get_bstr(&body, &ct, &ct_len) >= 0) {
+        if (ct_len < TAG_LEN) {
+            return -1;
+        }
+        msg->ciphertext = ct;
+        msg->ciphertext_len = ct_len - TAG_LEN;
+        msg->auth_tag = ct + ct_len - TAG_LEN;
+    }
+    else if (nanocbor_get_null(&body) >= 0) {
+        msg->ciphertext = NULL;
+        msg->ciphertext_len = 0;
+        msg->auth_tag = NULL;
+    }
+    else {
         return -1;
     }
-    msg->ciphertext = ct;
-    msg->ciphertext_len = ct_len - TAG_LEN;
-    msg->auth_tag = ct + ct_len - TAG_LEN;
 
     /* single recipient:
      * X25519: [protected, {-1: COSE_Key}, h'']
@@ -206,11 +223,11 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
         msg->kem_ct_len != SUIT_MLKEM_CT_SIZE) {
         return -1;
     }
-    return 0;
 #else
     if (nanocbor_enter_map(&recipient, &map) < 0) {
         return -1;
     }
+    msg->ephemeral_pub = NULL;
     while (!nanocbor_at_end(&map)) {
         int32_t key;
         if (nanocbor_get_int32(&map, &key) < 0) {
@@ -220,17 +237,35 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
             if (nanocbor_enter_map(&map, &key_map) < 0 ||
                 _map_get_bstr(&key_map, COSE_KEY_PARAM_X,
                               &msg->ephemeral_pub, &eph_len) < 0 ||
-                eph_len != X25519_KEYSIZE) {
+                eph_len != X25519_KEYSIZE || _drain(&key_map) < 0) {
                 return -1;
             }
-            return 0;
+            nanocbor_leave_container(&map, &key_map);
         }
-        if (nanocbor_skip(&map) < 0) {
+        else if (nanocbor_skip(&map) < 0) {
             return -1;
         }
     }
-    return -1;
+    if (msg->ephemeral_pub == NULL) {
+        return -1;
+    }
+    nanocbor_leave_container(&recipient, &map);
 #endif
+
+    /* unwind: trailing slots, recipient, recipients, body */
+    if (_drain(&recipient) < 0) {
+        return -1;
+    }
+    nanocbor_leave_container(&recipients, &recipient);
+    if (_drain(&recipients) < 0) {
+        return -1;
+    }
+    nanocbor_leave_container(&body, &recipients);
+    if (!nanocbor_at_end(&body)) {
+        return -1;
+    }
+    nanocbor_leave_container(&it, &body);
+    return (ssize_t)(it.cur - buf);
 }
 
 /* HKDF info: COSE_KDF_Context (RFC 9053 5.2), byte-identical to the host:
@@ -259,8 +294,9 @@ static int _build_kdf_context(const cose_encrypt_msg_t *msg,
 
 /* AAD: Enc_structure (RFC 9052 5.3) ["Encrypt", <body protected bstr>, h''],
  * reusing the received protected-header bytes verbatim */
-static int _build_enc_structure(const cose_encrypt_msg_t *msg,
-                                uint8_t *out, size_t out_len, size_t *written)
+int suit_cose_build_enc_structure(const cose_encrypt_msg_t *msg,
+                                  uint8_t *out, size_t out_len,
+                                  size_t *written)
 {
     nanocbor_encoder_t enc;
     nanocbor_encoder_init(&enc, out, out_len);
@@ -279,14 +315,14 @@ static int _build_enc_structure(const cose_encrypt_msg_t *msg,
  * the same worker thread), and the sharing recovers sizeof(MlKemKey) of
  * .bss on 32KB-RAM boards; see sys/include/suit/pq_scratch.h */
 union suit_pq_scratch suit_pq_scratch;
-#define _mlkem_state (suit_pq_scratch.mlkem)
+#define _mlkem_state (suit_pq_scratch.enc.mlkem)
 #else
 /* multi-KB struct: keep off the 4KB worker stack (see the ML-DSA
  * .bss-corruption lesson in MLDSA_HARDWARE_FIXES.md) */
 static MlKemKey _mlkem_state;
 #endif
 
-static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
+int suit_cose_derive_cek(const cose_encrypt_msg_t *msg, uint8_t *cek)
 {
     int ret;
     MlKemKey *key = &_mlkem_state;
@@ -323,7 +359,7 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
     return ret;
 }
 #else
-static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
+int suit_cose_derive_cek(const cose_encrypt_msg_t *msg, uint8_t *cek)
 {
     int ret;
     uint8_t scalar[X25519_KEYSIZE];
@@ -380,18 +416,19 @@ int suit_manifest_decrypt(uint8_t *buf, size_t size,
         return SUIT_MANIFEST_ENCRYPT_PASSTHROUGH;
     }
 
-    if (_parse_cose_encrypt(buf, size, &msg) < 0) {
+    if (suit_cose_encrypt_parse(buf, size, &msg) < 0 ||
+        msg.ciphertext == NULL /* detached container: not a manifest */) {
         LOG_INFO("suit: COSE_Encrypt parsing failed\n");
         return -1;
     }
 
-    ret = _derive_cek(&msg, cek);
+    ret = suit_cose_derive_cek(&msg, cek);
     if (ret != 0) {
         LOG_INFO("suit: manifest CEK derivation failed: %d\n", ret);
         return ret;
     }
 
-    if (_build_enc_structure(&msg, aad, sizeof(aad), &aad_len) < 0) {
+    if (suit_cose_build_enc_structure(&msg, aad, sizeof(aad), &aad_len) < 0) {
         memset(cek, 0, sizeof(cek));
         return -1;
     }

@@ -40,12 +40,32 @@ SUIT_MANIFEST_PAYLOADS ?= $(SLOT0_RIOT_BIN) $(SLOT1_RIOT_BIN)
 SUIT_MANIFEST_SLOTFILES ?= $(SLOT0_RIOT_BIN):$(SLOT0_OFFSET) \
                            $(SLOT1_RIOT_BIN):$(SLOT1_OFFSET)
 
+# Firmware-payload encryption (FIRMWARE_ENCRYPTION_PLAN.md): when the
+# firmware was built with the (default-on) suit_firmware_encrypt module,
+# publish ChaCha20-Poly1305-encrypted payloads instead of the plaintext
+# slot binaries. The manifest's image-digest/size stay computed over the
+# plaintext (the device stores decrypted bytes); only the URI gets the
+# .enc suffix. SUIT_ENC_SEC (the device key) comes from suit.base.inc.mk.
+ifeq (1,$(SUIT_FIRMWARE_ENCRYPT))
+  ifneq (,$(SUIT_ENC_SEC))
+    SUIT_FW_ENCRYPT_TOOL ?= $(RIOTBASE)/examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py
+    SUIT_ENC_SUFFIX_ARGS = --enc-suffix .enc
+    SUIT_PUBLISH_PAYLOADS = $(addsuffix .enc,$(SUIT_MANIFEST_PAYLOADS))
+
+%.enc: % $(SUIT_ENC_SEC)
+	$(Q)python3 $(SUIT_FW_ENCRYPT_TOOL) --no-headers \
+	  --key $(SUIT_ENC_SEC) -o $@ $<
+  endif
+endif
+SUIT_PUBLISH_PAYLOADS ?= $(SUIT_MANIFEST_PAYLOADS)
+
 $(SUIT_MANIFEST): $(SUIT_MANIFEST_PAYLOADS) $(BINDIR_SUIT)
 	$(Q)$(RIOTBASE)/dist/tools/suit/gen_manifest.py \
 	  --urlroot $(SUIT_COAP_ROOT) \
 	  --seqnr $(SUIT_SEQNR) \
 	  --uuid-vendor $(SUIT_VENDOR) \
 	  --uuid-class $(SUIT_CLASS) \
+	  $(SUIT_ENC_SUFFIX_ARGS) \
 	  -o $@.tmp \
 	  $(SUIT_MANIFEST_SLOTFILES)
 
@@ -79,7 +99,7 @@ SUIT_MANIFESTS := $(SUIT_MANIFEST_SIGNED) \
 
 suit/manifest: $(SUIT_MANIFESTS)
 
-suit/publish: $(SUIT_MANIFESTS) $(SUIT_MANIFEST_PAYLOADS)
+suit/publish: $(SUIT_MANIFESTS) $(SUIT_PUBLISH_PAYLOADS)
 	$(Q)mkdir -p $(SUIT_COAP_FSROOT)/$(SUIT_COAP_BASEPATH)
 	$(Q)cp $^ $(SUIT_COAP_FSROOT)/$(SUIT_COAP_BASEPATH)
 	$(Q)for file in $^; do \

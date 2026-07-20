@@ -12,6 +12,13 @@ For the classic unencrypted flow, build with `SUIT_MANIFEST_ENCRYPT=0` and
 skip step 6b — or don't: an encryption-capable firmware also accepts
 plaintext manifests (pass-through).
 
+Firmware **payload encryption is likewise on by default**
+(`SUIT_FIRMWARE_ENCRYPT=1`, see `FIRMWARE_ENCRYPTION_CHANGES.md`): the
+firmware can additionally decrypt ChaCha20-Poly1305-encrypted payloads
+*while they stream in* (step 6c), using the same device key. It also still
+accepts plaintext payloads (pass-through), so steps 6/6b alone keep
+working unchanged. Opt out with `SUIT_FIRMWARE_ENCRYPT=0`.
+
 ## 1. Prerequisites
 
 ```bash
@@ -107,6 +114,31 @@ overhead, verified on native64 (see `MLKEM_ENCRYPTION_CHANGES.md`). The
 firmware accepts exactly the scheme it was built for and logs a clear
 `recipient alg X != built-in Y` for the other one.
 
+## 6c. Encrypted firmware payload (optional; needs SUIT_FIRMWARE_ENCRYPT=1, the default)
+
+To also encrypt the **payload** (not just the manifest), encrypt it for
+the same device key and generate the manifest with `--enc-suffix .enc`,
+which keeps digest/size computed over the *plaintext* while the URI
+points at the `.enc`:
+
+```bash
+python3 examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py \
+  --no-headers --key keys/device_x25519.pem \
+  -o coaproot/payload.bin.enc coaproot/payload.bin
+
+dist/tools/suit/gen_manifest.py --urlroot coap://[2001:db8::1]/ --seqnr 2 \
+  --uuid-class native64 --enc-suffix .enc -o suit.tmp \
+  coaproot/payload.bin:0:ram:0
+```
+
+then `create`, `sign`, and (6b) encrypt the manifest as above. The device
+fetches `payload.bin.enc` (a 74-byte detached COSE_Encrypt header followed
+by ciphertext and a 16-byte tag, +90 bytes total) and decrypts it
+chunk-by-chunk straight into storage; the manifest's image digest is then
+verified over the decrypted plaintext as usual. Mind the RAM storage
+region limit (2048 B per region on native) — that limit applies to the
+*plaintext* size.
+
 ## 7. Trigger the update from the RIOT shell
 
 ```
@@ -128,6 +160,18 @@ A plaintext manifest on an encryption-capable firmware instead logs
 `suit_worker: manifest not encrypted, passing through` and proceeds
 normally; a tampered/wrongly-encrypted container is rejected before
 parsing with `suit_worker: manifest decryption failed. res=-213`.
+
+With an encrypted payload (step 6c) the fetch additionally logs:
+
+```
+suit: decrypting payload (header 74 bytes)
+suit: payload decrypted (N bytes)
+Finalizing payload store
+```
+
+A plaintext payload logs `suit: payload not encrypted, passing through`;
+a tampered encrypted payload fails with `suit: payload authentication
+failed` *before* the store is finalized, and the update aborts.
 
 Tip for quick tests without networking: the vfs transport works too —
 copy the manifest to `examples/advanced/suit_update/native/` and
@@ -155,3 +199,10 @@ device key from the image entirely (~17 KB smaller on native64) —
 behavior is byte-identical to the pre-encryption workflow: publish and
 fetch `suit_manifest.signed`, skip step 6b. Full details:
 `MANIFEST_ENCRYPTION_CHANGES.md`.
+
+`SUIT_FIRMWARE_ENCRYPT=0` analogously drops only the payload decryptor
+(~2 KB text / ~450 B RAM on native64; manifest encryption stays
+available): plaintext payloads work as always, and an encrypted payload
+is then rejected by the normal size/digest checks (`Image beyond size`).
+Note that `SUIT_FIRMWARE_ENCRYPT=1` implies the `suit_manifest_encrypt`
+module (shared crypto + device key), even with `SUIT_MANIFEST_ENCRYPT=0`.

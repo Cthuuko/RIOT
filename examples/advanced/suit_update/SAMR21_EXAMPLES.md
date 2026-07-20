@@ -8,10 +8,16 @@ signing algorithm baked into the firmware and used to sign updates:
 - **Example C — ML-DSA-44** (post-quantum, FIPS 204, category 2)
 - **Example D — ML-DSA-87** (post-quantum, FIPS 204, category 5)
 
-plus one orthogonal add-on that layers on top of any of them:
+plus two orthogonal add-ons that layer on top of any of them:
 
 - **Example E — Encrypted manifests** (X25519 + ChaCha20-Poly1305
-  confidentiality; **unverified draft**, see its own status note)
+  confidentiality; verified on hardware on top of A)
+- **Example F — Encrypted firmware payloads** (streaming
+  ChaCha20-Poly1305; **unverified draft**, see its banner)
+
+and a **Variant cookbook** (before the final Gotchas section) with the
+exact flag sets for every supported combination — plain/classical/PQC ×
+manifest-encryption on/off × payload-encryption on/off.
 
 Run each command as its own line in the WSL shell, from the repo root
 (`~/masterthesis/RIOT` or wherever this checkout lives). All four examples
@@ -42,6 +48,20 @@ that line is the only visible change). Build with `SUIT_MANIFEST_ENCRYPT=0`
 to reproduce the exact pre-encryption images. **Example E itself is
 verified on real hardware on top of A** (2026-07-19, full encrypted OTA +
 reboot; see its banner and E.9 for what remains open).
+
+**Since firmware-payload encryption landed (also default-on, see Example
+F)**: `suit/publish` now *encrypts the slot binaries* and points the
+manifest URIs at `.enc` files whenever `SUIT_FIRMWARE_ENCRYPT=1` (the
+default) — so a bare A.7 publish already produces an encrypted-payload
+update. A default-built firmware handles both encrypted and plaintext
+payloads; add `SUIT_FIRMWARE_ENCRYPT=0` to the **publish** command to get
+the classic plaintext publish, and to the **build** command to drop the
+decryptor from the image entirely. The one combination that fails is
+publishing encrypted payloads for a firmware built with
+`SUIT_FIRMWARE_ENCRYPT=0` — see the Variant cookbook's matching rule.
+Exception: ML-DSA-65 (Example B) **must** be built with
+`SUIT_FIRMWARE_ENCRYPT=0` — the decryptor's +392 B RAM no longer fits
+(overflow 308 B, measured).
 
 ---
 
@@ -165,7 +185,15 @@ SUIT_KEY_DIR=~/masterthesis/RIOT/examples/advanced/suit_update/ed25519-keys \
 ```
 
 Builds a new firmware image, signs the manifest with the Ed25519 key, and
-copies both into `coaproot/`.
+copies both into `coaproot/`. **Default behavior since firmware-payload
+encryption landed**: the slot binaries are published as
+ChaCha20-Poly1305-encrypted `.enc` files (encrypted for the device's
+X25519 key) and the manifest URIs point at them — the flashed default
+firmware decrypts them transparently (Example F). For the classic
+plaintext publish, append `SUIT_FIRMWARE_ENCRYPT=0` to the command above;
+**that opt-out is mandatory if the flashed firmware was itself built with
+`SUIT_FIRMWARE_ENCRYPT=0`** (it cannot decrypt payloads — the fetch would
+abort with `Image beyond size`).
 
 ## A.8 — Notify the device to fetch and apply it
 
@@ -613,8 +641,318 @@ stack.
 
 ---
 
+# Example F — Encrypted firmware payloads (streaming ChaCha20-Poly1305)
+
+> **⚠️ UNVERIFIED DRAFT — not yet run on real hardware.** Everything below
+> is extrapolated from the native64-verified flow (CoAP + VFS transports,
+> tamper rejection, pass-through — see `FIRMWARE_ENCRYPTION_CHANGES.md`)
+> and *link-level* samr21 measurements. Run the F.9 checklist, then
+> remove this banner and record the observed numbers.
+
+Payload encryption is orthogonal to (and composes with) Examples A–E: the
+firmware image itself travels as `<slotN>.riot.bin.enc` — a 74-byte
+detached COSE_Encrypt header followed by ciphertext and a Poly1305 tag —
+and the device decrypts it chunk-by-chunk while flashing the inactive
+slot. It is **on by default** (`SUIT_FIRMWARE_ENCRYPT=1`), so A/B/C
+flashes are already payload-decryption-capable, and it shares the device
+key with manifest encryption. Plaintext payloads still pass through, so
+the A.7/A.8 publish flow keeps working unchanged.
+
+**Measured RAM feasibility** (link-level, corrected 2026-07-20 — an
+earlier version of this table understated the ML-KEM rows by not
+accounting for wolfCrypt's runtime heap/stack use; see the note after the
+table and `FIRMWARE_ENCRYPTION_CHANGES.md`'s gotchas for the full story):
+
+| Base | With firmware+manifest encryption |
+|---|---|
+| A (Ed25519) + X25519 | ✅ 21,552 B RAM (**11.2 KB spare**); the decryptor itself costs +392 B RAM / +1,140 B text |
+| C (ML-DSA-44) + X25519 | ✅ 31,280 B RAM (1,488 B spare) |
+| B (ML-DSA-65) + X25519 | ❌ overflow 308 B — **build B with `SUIT_FIRMWARE_ENCRYPT=0`** |
+| A (Ed25519) + ML-KEM-768 | ✅ 30,736 B RAM (**2,032 B spare**) |
+| A (Ed25519) + ML-KEM-1024 | ✅ 32,720 B RAM (**48 B spare — essentially zero margin**) |
+| C + ML-KEM-768 (**full PQ**) | ❌ **overflows 3,556 B — does not fit, not a tuning problem** |
+| D (ML-DSA-87) | ❌ (already fails plain) |
+
+**Correction (2026-07-20)**: the ML-KEM rows above were re-measured after
+discovering wolfCrypt's ML-KEM code unconditionally heap-allocates
+multi-KB scratch buffers at runtime — invisible to `arm-none-eabi-size`,
+so the *original* "measured" numbers (Ed25519+768: 5.0 KB spare,
+full-PQ: 968 B spare) were wrong. The fix
+(`WOLFSSL_NO_MALLOC` in `pkg/wolfssl/include/user_settings.h` + a
+correctly-sized 9,216 B worker stack, both landed 2026-07-20) turned an
+untested "successful" link into an honest result: **the full-PQ combo
+does not fit**, full stop — post-quantum signature *and* post-quantum
+encryption together exceed samr21's 32 KB RAM by ~3.5 KB even with every
+available memory-reduction knob. Classical signature + PQ encryption (row
+above, A + ML-KEM-768) does fit and is the combo to use for a
+post-quantum-encryption demo on this board.
+
+## F.0 — Prerequisite
+
+A working base example (A recommended) flashed from a default build
+(both encryption flags on). Keep the A.4-style exports set.
+
+## F.7 — Publish (automated: encrypts payloads + adjusts manifest URIs)
+
+`suit/publish` handles everything when `SUIT_FIRMWARE_ENCRYPT=1` (the
+default): it encrypts both slot binaries for the device key (`%.enc`
+rule), generates the manifest with digest/size over the *plaintext* but
+URIs pointing at the `.enc` files, and publishes only the `.enc`
+payloads:
+
+```sh
+SUIT_COAP_SERVER=[2001:db8::1] APP_VER=$(date +%s) \
+  BOARD=samr21-xpro make -C examples/advanced/suit_update suit/publish
+```
+
+Then encrypt the manifest as in E.7 (same path/name rules —
+`riot.suit.enc`, 61/64 URL chars).
+
+## F.8 — Notify
+
+Identical to E.8. Expected new lines in the board terminal, between the
+policy check and the progress bar / digest verification:
+
+```
+suit: decrypting payload (header 74 bytes)
+Fetching firmware |█████████████████████████| 100%
+suit: payload decrypted (N bytes)
+```
+
+A plaintext payload instead logs `suit: payload not encrypted, passing
+through`.
+
+## F.9 — Bring-up checklist (run on hardware, then drop the banner)
+
+> First hardware attempt (2026-07-20, plain manifest + encrypted payload):
+> streaming decrypt itself worked first try — `decrypting payload (header
+> 74 bytes)` → `payload decrypted (104404 bytes)` (AEAD tag verified) —
+> but the digest check failed (`Erasing bad payload`, `res=-7`). Root
+> cause was an **upstream riotboot bug**, not the crypto: RAW-mode
+> `riotboot_flashwrite_putbytes()` flashed blocks at the input-segment
+> position, correct only for buffer-aligned chunks; the decryptor's
+> header-stripped chunk stream (38 B first chunk) broke that hidden
+> assumption. Fixed in `sys/riotboot/flashwrite.c` — **reflash the board
+> with a rebuilt image** (bootloader itself is unaffected) and retest.
+
+> Second hardware attempt (2026-07-20, ML-DSA-44 + ML-KEM-768 full-PQ
+> combo, manifest fetch this time): after fixing the manifest-buffer
+> undersizing (real `suit/publish` URIs produce a larger manifest than
+> the constant assumed) and a mute-shell heap exhaustion (pktbuf
+> rebalance), hit `suit: manifest CEK derivation failed: -125`
+> (wolfCrypt `MEMORY_E`) — **not a bug in this feature**, a pre-existing
+> wolfCrypt ML-KEM defect: unconditional multi-KB heap allocation inside
+> `wc_MlKemKey_MakeKeyWithRandom`/`Decapsulate`, invisible to every prior
+> link-time RAM measurement (see `FIRMWARE_ENCRYPTION_CHANGES.md`
+> gotchas for the full trace). Fixed
+> (`WOLFSSL_NO_MALLOC` + corrected 9,216 B worker stack) and
+> **re-measured for real: the full-PQ combo does not fit samr21's 32 KB
+> RAM at all (~3.5 KB short)** — item 5 below is retired, replaced with
+> the Ed25519+ML-KEM-768 combo which does fit.
+
+1. ⬜ Encrypted-payload OTA end-to-end (decrypt → flash → digest verify →
+   reboot into the other slot), on top of A. *(Attempted 2026-07-20:
+   failed pre-fix at the digest step as described above; retest with the
+   flashwrite fix.)*
+2. ⬜ Worker-stack watermark during the fetch (`ps` in the shell): the
+   payload path nests the CEK derivation inside the CoAP callback. For
+   ML-KEM builds this is no longer a guess — `-fstack-usage` measured the
+   ML-KEM decapsulation chain at ~8.5-9 KB peak, and the worker stack is
+   now forced to 9,216 B accordingly; confirm the real watermark stays
+   under that on hardware rather than trusting the estimate blindly.
+3. ⬜ Tampered `.enc` payload rejected (`suit: payload authentication
+   failed` before `Finalizing payload store`; a failed fetch doesn't
+   consume the seqnr).
+4. ⬜ Mixed mode: a plain A.7/A.8 publish (`SUIT_FIRMWARE_ENCRYPT=0
+   make suit/publish`) accepted by the same firmware.
+5. ⬜ PQ-encryption variant (A + `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768`,
+   **classical Ed25519 signature**, not the retired full-PQ combo):
+   2,032 B RAM spare at link, correctly stack-sized — repeat 1–3 there.
+   (The full-PQ combo, C + ml-kem-768, is confirmed **infeasible** on
+   this board — do not attempt it, it will not link.)
+
+---
+
+# Variant cookbook — every supported combination
+
+Three independent axes, all selected by Make variables (defaults in
+**bold**):
+
+| Axis | Variable | Choices |
+|---|---|---|
+| Signature | `SUIT_KEY_ALGO` | **`ed25519`** (classical), `ml-dsa-44`/`-65`/`-87` (PQC) |
+| Manifest encryption | `SUIT_MANIFEST_ENCRYPT` (+`_ALGO`) | **`1`** / `0`; algo **`x25519`** (classical), `ml-kem-768`/`-1024` (PQC) |
+| Payload encryption | `SUIT_FIRMWARE_ENCRYPT` | **`1`** / `0` (uses the same `_ALGO`/device key as the manifest axis) |
+
+**The matching rule (read this first).** The *build/flash* flags decide
+what the device **can** accept; the *publish* flags decide what gets
+**produced**. Plaintext is always accepted (pass-through on both axes),
+so the only forbidden direction is publishing *more* encryption than the
+flashed image supports:
+
+- encrypted payload → `SUIT_FIRMWARE_ENCRYPT=0` firmware: fetch aborts
+  (`Image beyond size`);
+- encrypted manifest → `SUIT_MANIFEST_ENCRYPT=0` firmware: rejected at
+  parse (`suit_parse() failed`);
+- wrong `_ALGO` (e.g. ML-KEM container for an X25519 build): rejected
+  with `recipient alg X != built-in Y`.
+
+Simplest habit: **use the same flag set for A.5 (flash) and A.7
+(publish).** Manifest encryption additionally needs the manual E.7
+encrypt-after-publish step — it is *not* automated in `suit/publish`;
+payload encryption *is* automated.
+
+Every recipe below = Examples A–D's steps with the stated variables
+appended to **both** the flash (x.5) and publish (x.7) commands, plus
+E.7/E.8 when the manifest is to be encrypted. RAM numbers: measured
+link-level, out of 32,768 B (`FIRMWARE_ENCRYPTION_CHANGES.md` /
+`MLKEM_ENCRYPTION_CHANGES.md`).
+
+## 1. Plain classical SUIT (no confidentiality — the pre-encryption flow)
+
+```sh
+SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0
+```
+Follow Example A verbatim with these two appended to A.5 and A.7; notify
+per A.8. Byte-identical to the original workflow (no device key, no
+decryptor, most flash/RAM headroom). ✅ hardware-verified (Example A).
+
+## 2. Classical, fully encrypted (Ed25519 + X25519, manifest **and** payload — the defaults)
+
+No extra variables — this *is* the default build and publish:
+A.5 + A.7 bare, then E.7 (encrypt the manifest) + E.8 (notify
+`riot.suit.enc`). Expected new log lines: `manifest decrypted (N bytes)`,
+`decrypting payload (header 74 bytes)`, `payload decrypted (N bytes)`.
+✅ 21,552 B RAM (11.2 KB spare); manifest part hardware-verified
+(Example E), payload part pending F.9.
+
+## 3. Classical, manifest encryption only
+
+```sh
+SUIT_FIRMWARE_ENCRYPT=0
+```
+A.5/A.7 with the flag, then E.7 + E.8. Payloads stay plaintext (the flag
+on A.7 keeps `suit/publish` from encrypting them). ✅ 21,160 B RAM —
+exactly the hardware-verified Example E configuration.
+
+## 4. Classical, payload encryption only (plain manifests)
+
+```sh
+SUIT_MANIFEST_ENCRYPT=0
+```
+A.5/A.7 with the flag, notify per A.8 (no E.7 — the manifest stays
+plaintext, named `riot.suit.latest.bin`). Note the image still links the
+manifest-decrypt crypto (the payload decryptor depends on it for the
+shared device key/primitives) — publish manifests plaintext anyway, since
+the `SUIT_MANIFEST_BUFSIZE` headroom for encrypted manifests is only
+reserved when `SUIT_MANIFEST_ENCRYPT=1`. This is the combination first
+exercised on hardware 2026-07-20 (found the riotboot alignment bug —
+retest after reflashing with the fix).
+
+## 5. PQC signatures only, no confidentiality
+
+```sh
+SUIT_KEY_ALGO=ml-dsa-44   # or ml-dsa-65 / ml-dsa-87
+SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0
+```
+Follow Example C (or B/D) with the flags appended — C.5/C.7 already set
+`SUIT_KEY_ALGO`; use the matching key dir/name. ✅ hardware-verified for
+ML-DSA-44/-65 (Examples C/B); ML-DSA-87 ❌ doesn't link (Example D).
+
+## 6. Hybrid: PQC signatures + classical encryption
+
+```sh
+SUIT_KEY_ALGO=ml-dsa-44          # ML-DSA-44 build (Example C base)
+# manifest+payload encryption on by default (X25519)
+```
+C.5/C.7 bare (defaults on), then E.7/E.8 with
+`--key $SUIT_KEY_DIR/device_x25519.pem`. ✅ 31,280 B RAM (1,488 B spare).
+**ML-DSA-65 variant**: must add `SUIT_FIRMWARE_ENCRYPT=0` (manifest
+encryption only) — ✅ links at 88 B spare; with the payload decryptor it
+overflows by 308 B. ML-DSA-87: ❌.
+
+## 7. Hybrid: classical signature + PQC encryption
+
+```sh
+SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768   # or ml-kem-1024
+```
+A.5/A.7 with the flag (key dir already holds `device_mlkem768.pem` /
+generated on first build), then E.7 using
+`manifest-encryption-mlkem/encrypt_manifest.py --key
+$SUIT_KEY_DIR/device_mlkem768.pem`; payload encryption picks up the same
+KEM key automatically. **This is the recommended samr21 post-quantum
+*encryption* demo** — the full-PQ combo below does not fit. ✅ ML-KEM-768
+manifest+payload: 30,736 B RAM (**2,032 B spare**, corrected 2026-07-20 —
+see the note below); manifest-only: 3,440 B spare. ML-KEM-1024
+manifest+payload: 32,720 B RAM (**48 B spare — essentially zero margin,
+not recommended for anything beyond a one-off experiment**). Needs
+OpenSSL 3.5+ and the local wolfssl checkout (auto-selected). The app
+Makefile forces a 9,216 B worker stack for any `ml-kem-%` build
+(mandatory — wolfCrypt's ML-KEM decapsulation measures ~8.5-9 KB peak
+stack via `-fstack-usage`; see recipe 8's correction note).
+
+## 8. Full PQC (ML-DSA-44 signatures + ML-KEM-768 encryption) — ❌ CONFIRMED INFEASIBLE
+
+```sh
+SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768
+```
+**Do not attempt this combo on samr21-xpro — it will not link.**
+Post-quantum signature *and* post-quantum encryption together need more
+RAM than this board has, by ~3.3-3.6 KB even manifest-only, with every
+available wolfCrypt memory-reduction flag enabled. This was **not**
+apparent from earlier link-time measurements, which is why this recipe
+used to say "✅ 968 B spare" — corrected below.
+
+**Correction (2026-07-20, real hardware bring-up)**: the original "968 B
+spare" claim was link-time-only and never accounted for wolfCrypt's
+ML-KEM code unconditionally heap-allocating multi-KB scratch buffers at
+*runtime* (up to 6,144 B in one call) — invisible to
+`arm-none-eabi-size`/`nm`. On real hardware this produced `suit: manifest
+CEK derivation failed: -125` (wolfCrypt `MEMORY_E`). The fix
+(`WOLFSSL_NO_MALLOC` in `pkg/wolfssl/include/user_settings.h`, moving the
+buffers to a `-fstack-usage`-measured ~8.5-9 KB stack instead) is
+strictly correct, but re-measuring with the *correct* stack size shows
+the combo overflows RAM by 3,364 B (manifest-only) / 3,556 B (+ payload
+encryption) — it never actually fit; the previous number was simply
+measuring the wrong thing. Full trace in
+`FIRMWARE_ENCRYPTION_CHANGES.md`'s gotchas. **Verified E2E only on
+native64** (effectively unlimited stack there), never on hardware, and
+never will fit on this board's 32 KB RAM without a wolfSSL-side patch to
+reduce ML-KEM's decapsulation memory footprint further (out of scope
+here). Use recipe 7 (Ed25519 + ML-KEM-768) for a working samr21
+PQ-encryption demo instead. ML-DSA-44 + ML-KEM-**1024** is strictly
+worse — also infeasible.
+
+## Quick reference
+
+| # | Signature | Manifest enc | Payload enc | Flags on flash+publish | samr21 |
+|---|---|---|---|---|---|
+| 1 | Ed25519 | — | — | `SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0` | ✅ verified |
+| 2 | Ed25519 | X25519 | X25519 | *(defaults)* | ✅ links, F.9 pending |
+| 3 | Ed25519 | X25519 | — | `SUIT_FIRMWARE_ENCRYPT=0` | ✅ verified (Ex. E) |
+| 4 | Ed25519 | — | X25519 | `SUIT_MANIFEST_ENCRYPT=0` | 🔄 retest post-fix |
+| 5 | ML-DSA-44/65 | — | — | `SUIT_KEY_ALGO=… + both =0` | ✅ verified (Ex. B/C) |
+| 6 | ML-DSA-44 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-44` | ✅ links, 1.5 KB spare |
+| 6b | ML-DSA-65 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_FIRMWARE_ENCRYPT=0` | ✅ links, 88 B spare |
+| 7 | Ed25519 | ML-KEM-768 | ML-KEM-768 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | ✅ links, **2.0 KB spare** (corrected) |
+| 8 | ML-DSA-44 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | ❌ **does not link (corrected) — see recipe 8** |
+| — | ML-DSA-87 | any | any | — | ❌ never links |
+
+Row 7/8 numbers corrected 2026-07-20 after discovering wolfCrypt's ML-KEM
+runtime heap use was invisible to the earlier link-time-only
+measurement; see recipe 8's correction note and
+`FIRMWARE_ENCRYPTION_CHANGES.md`'s gotchas for the full story.
+
 ## Gotchas that apply to all examples
 
+- **Keep build and publish flags identical.** Since both encryption
+  features default to on, a publish from a terminal *without* the opt-out
+  flags produces encrypted artifacts — fine for default-built firmware,
+  but a board flashed with `SUIT_FIRMWARE_ENCRYPT=0` /
+  `SUIT_MANIFEST_ENCRYPT=0` will reject them (`Image beyond size` /
+  `suit_parse() failed`). Plaintext publishes are accepted by *every*
+  build (pass-through), so when in doubt, opt out at publish time. Full
+  rules: the Variant cookbook's matching rule.
 - **`res=-5` / `seq_nr <= running image` on re-notify is expected** — the
   manifest sequence number must strictly increase. Publish with a fresh
   `APP_VER=$(date +%s)` to update again.

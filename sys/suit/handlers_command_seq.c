@@ -43,6 +43,9 @@
 #ifdef MODULE_SUIT_TRANSPORT_VFS
 #include "suit/transport/vfs.h"
 #endif
+#ifdef MODULE_SUIT_FIRMWARE_ENCRYPT
+#include "suit/firmware_encrypt.h"
+#endif
 #include "suit/transport/mock.h"
 
 #if defined(MODULE_PROGRESS_BAR)
@@ -443,6 +446,19 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
         return SUIT_ERR_STORAGE;
     }
 
+#if defined(MODULE_SUIT_TRANSPORT_COAP) || defined(MODULE_SUIT_TRANSPORT_VFS)
+    /* With firmware encryption enabled, a streaming-decrypt wrapper sits
+     * in front of the storage helper: it strips/decrypts the COSE_Encrypt
+     * payload container and forwards plaintext chunks (plaintext payloads
+     * pass through unchanged) */
+#ifdef MODULE_SUIT_FIRMWARE_ENCRYPT
+    coap_blockwise_cb_t fetch_cb = suit_payload_decrypt_helper;
+    suit_payload_decrypt_start(_storage_helper);
+#else
+    coap_blockwise_cb_t fetch_cb = _storage_helper;
+#endif
+#endif
+
     res = -1;
 
     if (0) {}
@@ -450,7 +466,7 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
     else if ((strncmp(manifest->urlbuf, "coap://", 7) == 0) ||
              (IS_USED(MODULE_NANOCOAP_DTLS) && strncmp(manifest->urlbuf, "coaps://", 8) == 0)) {
         res = nanocoap_get_blockwise_url(manifest->urlbuf, CONFIG_SUIT_COAP_BLOCKSIZE,
-                                         _storage_helper,
+                                         fetch_cb,
                                          manifest);
     }
 #endif
@@ -461,7 +477,7 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
 #endif
 #ifdef MODULE_SUIT_TRANSPORT_VFS
     else if (strncmp(manifest->urlbuf, "file://", 7) == 0) {
-        res = suit_transport_vfs_fetch(manifest, _storage_helper, manifest);
+        res = suit_transport_vfs_fetch(manifest, fetch_cb, manifest);
     }
 #endif
     else {

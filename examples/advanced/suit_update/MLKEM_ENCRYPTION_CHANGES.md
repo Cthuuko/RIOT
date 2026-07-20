@@ -5,13 +5,54 @@ the X25519 manifest-encryption feature (`MANIFEST_ENCRYPTION_CHANGES.md`)
 with a **post-quantum key-establishment alternative**: ML-KEM-768/1024
 (FIPS 203), selectable via `SUIT_MANIFEST_ENCRYPT_ALGO` (X25519 stays the
 default). Status: verified end-to-end on `native64` (Ed25519 signing +
-ML-KEM-768 encryption); samr21-xpro **link-level feasibility measured for
-all 12 signing × encryption combos** (table below), hardware E2E pending.
+ML-KEM-768 encryption). samr21-xpro: hardware bring-up (2026-07-20)
+uncovered that **every prior samr21 feasibility number in this document
+was wrong** (see the correction below) — corrected numbers are in
+`FIRMWARE_ENCRYPTION_CHANGES.md`'s feasibility table, which now supersedes
+the matrix that used to be here.
 `mlkem-encryption-implementation.patch` in this directory holds the diff
 of whatever ML-KEM work is not yet committed at regeneration time (same
 convention as `manifest-encryption-implementation.patch` for the X25519
 feature); currently that is the RAM-rework delta (pq_scratch union, exact
 buffer, doc updates).
+
+## ⚠️ Correction (2026-07-20): the original samr21 feasibility matrix below is wrong
+
+Hardware bring-up of the full-PQ combo (ML-DSA-44 + ML-KEM-768) failed
+with `suit: manifest CEK derivation failed: -125` (wolfCrypt `MEMORY_E`)
+despite the matrix below claiming "1,160 B spare" for exactly that combo.
+Root cause: **wolfCrypt's `wc_mlkem.c` heap-allocates its scratch buffers
+at runtime** (`XMALLOC`, up to 6,144 B in a single call inside
+`wc_MlKemKey_MakeKeyWithRandom`, more inside `Decapsulate`) — this is
+completely invisible to `arm-none-eabi-size`/`nm`, which only report
+static `.data`/`.bss`. Every number in the table below was link-time-only
+and never accounted for it; on real hardware, the newlib heap (a few
+hundred bytes to a few KB depending on other tuning) can never satisfy a
+single 6 KB allocation, so decryption fails outright with `MEMORY_E`.
+
+Fix (in `pkg/wolfssl/include/user_settings.h`, `MODULE_WOLFCRYPT_MLKEM`
+block): `WOLFSSL_NO_MALLOC` + `WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM` +
+`WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM` move those buffers from heap to
+**stack** (bounded and measurable, unlike heap). `-fstack-usage` then
+gave the real number: `wc_MlKemKey_Decapsulate`'s call chain
+(`mlkemkey_decapsulate` → `mlkemkey_encapsulate`, invoked internally for
+the FIPS 203 implicit-rejection check) peaks at **~8.5–9 KB of stack** —
+roughly double the 4 KB `SUIT_WORKER_STACKSIZE` this feature was
+previously built with. That means the ORIGINAL "links successfully" runs
+in the table below didn't just have wrong RAM numbers — on real hardware
+(no MPU on Cortex-M0+) they would have **silently corrupted adjacent
+`.bss`** on every decapsulation, a strictly worse failure mode than the
+clean `MEMORY_E` we actually hit. The app Makefile now forces a
+correctly-sized 9,216 B worker stack whenever `SUIT_MANIFEST_ENCRYPT_ALGO=
+ml-kem-%` is selected on a non-native board, which makes infeasible
+combos fail loudly at **link time** (`.bss` overflow) instead.
+
+Re-measured with the fix: the full-PQ combo (any ML-DSA level +
+ML-KEM-768/1024) no longer fits at all (❌, off by ~3.3–3.6 KB even
+manifest-only); Ed25519 + ML-KEM-768/1024 still fits, with roughly
+2–3.4 KB less spare than previously claimed. See
+`FIRMWARE_ENCRYPTION_CHANGES.md` for the authoritative re-measured table
+(that document's samr21 section was written after this correction).
 
 ## What changes vs. the X25519 variant
 
@@ -60,26 +101,37 @@ ML-KEM), triggered automatically by `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-%`.
 | `examples/advanced/suit_update/manifest-encryption-mlkem/` | Standalone interop example (plan Step 1), both levels; `encrypt_manifest.py --key/-o` doubles as the host-side encryption tool |
 | `examples/advanced/suit_update/mlkem-feasibility-matrix-raw.txt` | Raw `size`/ld output of the 12-combo samr21 matrix below |
 
-## samr21-xpro feasibility matrix (measured 2026-07-19)
+## samr21-xpro feasibility matrix — SUPERSEDED, see the correction above
+
+**⚠️ The table below is link-time-only and known wrong for every ML-KEM
+column** (measured before the `WOLFSSL_NO_MALLOC`/stack-sizing fix — see
+the correction section above). Kept for history; do not use it to decide
+what to build. The corrected, re-measured numbers are in
+`FIRMWARE_ENCRYPTION_CHANGES.md`.
 
 `BOARD=samr21-xpro make clean all` per combo; RAM = data+bss of
 `suit_update.elf` against 32,768 B; ❌ = `slot0.elf` `.bss` overflow:
 
-| Signing \ Encryption | X25519 | ML-KEM-768 | ML-KEM-1024 |
+| Signing \ Encryption | X25519 | ML-KEM-768 (⚠️ wrong, see above) | ML-KEM-1024 (⚠️ wrong, see above) |
 |---|---|---|---|
-| Ed25519 | ✅ 102,492 t / 21,160 RAM (11.6 KB spare) | ✅ 114,144 t / 26,264 RAM (6.5 KB spare) | ✅ 113,952 t / 27,768 RAM (5.0 KB spare) |
-| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (1.9 KB spare) | ✅ **120,292 t / 31,608 RAM (1,160 B spare)** — after the RAM rework below (pre-rework: ❌ overflow 3,228 B) | ✅ 120,132 t / 32,472 RAM (296 B spare — links, but treat as experimental) after the rework (pre: ❌ 4,732 B) |
-| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (88 B spare) | ❌ overflow ~5 KB even with the rework's ~4.4 KB | ❌ overflow 6,524 B |
-| ML-DSA-87 | ❌ overflow 3,756 B | ❌ overflow 8,860 B | ❌ overflow 10,364 B |
+| Ed25519 | ✅ 102,492 t / 21,160 RAM (11.6 KB spare) | ~~✅ 6.5 KB spare~~ | ~~✅ 5.0 KB spare~~ |
+| ML-DSA-44 | ✅ 116,100 t / 30,888 RAM (1.9 KB spare) | ~~✅ 1,160 B spare~~ **❌ actually overflows ~3.4 KB** | ~~✅ 296 B spare~~ |
+| ML-DSA-65 | ✅ 116,708 t / 32,680 RAM (88 B spare) | ❌ (still ❌ after correction) | ❌ |
+| ML-DSA-87 | ❌ overflow 3,756 B | ❌ | ❌ |
 
-Takeaways: **Ed25519 + ML-KEM-768/1024 fit with kilobytes to spare**, and
-after the RAM rework the **full-PQ combo ML-DSA-44 + ML-KEM-768 fits with
-1,160 B spare** (ML-DSA-44 + ML-KEM-1024 links too, at a thin 296 B).
-ML-DSA-65 survives only with X25519 (88 B spare); ML-DSA-87 remains a
-dead end. Flash never binds (≤120.3 KB text). Link-level verdicts —
-hardware E2E for the fitting combos is plan Step 5b's remaining half.
+Flash never binds (≤120.3 KB text) — that part of the analysis still
+holds; it's purely a RAM/stack story.
 
-## RAM rework: fitting ML-DSA-44 + ML-KEM-768 (recovered 4,388 B)
+## RAM rework: fitting ML-DSA-44 + ML-KEM-768 (recovered 4,388 B) — superseded
+
+**This section's conclusion no longer holds** (see the correction above):
+the union and exact-buffer levers below were real and are still in the
+code, but they recovered RAM from the wrong side of the ledger — static
+`.bss`, when the actual shortfall (once the heap bug is fixed and the
+worker stack is correctly sized) is ~3.3–3.6 KB of *stack*, not covered
+by either lever. Left here for the historical record of what these two
+levers do; they remain in place (harmless, still saves real `.bss`) but
+are no longer sufficient on their own to fit this combo.
 
 Two levers (a third — `CONFIG_GNRC_PKTBUF_SIZE=4096`, +2 KB — is wired as
 a commented-out reserve in the app Makefile):

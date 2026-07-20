@@ -121,6 +121,14 @@ suit/genkey: $(SUIT_SEC)
 # the firmware via a generated header (prototype-grade key storage: the key
 # ends up in the image).
 export SUIT_MANIFEST_ENCRYPT ?= 1
+# Firmware-payload confidentiality (suit_firmware_encrypt module, selected
+# by the app Makefile like the modules above): reuses the same device key
+# (SUIT_ENC_SEC) and recipient scheme, so no extra key handling here. The
+# host-side payload encryption is a manual step, like manifest encryption:
+# examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py
+# --no-headers --key $(SUIT_ENC_SEC) -o <payload>.enc <payload>, with the
+# manifest generated via gen_manifest.py --enc-suffix .enc.
+export SUIT_FIRMWARE_ENCRYPT ?= 1
 # Key-establishment scheme: x25519 (default) or ml-kem-768 / ml-kem-1024
 # (post-quantum; needs OpenSSL 3.5+ for key generation and the local
 # wolfssl checkout on-device — see MLKEM_ENCRYPTION_PLAN.md)

@@ -165,6 +165,31 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
 
 #ifdef MODULE_WOLFCRYPT_MLKEM
 #define WOLFSSL_HAVE_MLKEM
+/* Without this, wc_mlkem.c unconditionally XMALLOCs its scratch buffers
+ * (up to 6-10KB depending on operation) from the C heap - undetectable by
+ * link-time .data/.bss analysis (arm-none-eabi-size), and far more than
+ * newlib's heap has on a 32KB-RAM board: found the hard way as runtime
+ * MEMORY_E (-125) from suit_cose_derive_cek() on real samr21-xpro
+ * hardware, despite the build linking fine and even "measuring" spare
+ * static RAM. Forces those buffers onto the stack instead (sized down
+ * further by the two SMALL_MEM flags below) - bounded, and covered by
+ * SUIT_WORKER_STACKSIZE, unlike an unbounded/unmeasured heap need.
+ * Confirmed scoped to wc_mlkem.c/wc_mlkem_poly.c only: every other
+ * currently-compiled wolfcrypt file's WOLFSSL_NO_MALLOC branches are
+ * additionally gated by WOLFSSL_SMALL_STACK, which this build never
+ * defines, so they're unaffected either way. */
+#define WOLFSSL_NO_MALLOC
+/* Trade a little more CPU for smaller scratch buffers: MakeKeyWithRandom's
+ * combined matrix+error-vector buffer drops from (k+1)*k*N (6144B @ k=3)
+ * to k*N (1536B); mutually exclusive with WOLFSSL_MLKEM_CACHE_A (not
+ * defined here). */
+#define WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM
+/* Same trade for encapsulate's `y` buffer (used by decapsulate too, via
+ * the FIPS 203 implicit-rejection re-encryption check): (k+3)*k+3)*N
+ * (10752B @ k=3) down to 3*k*N (4608B). Still the single largest stack
+ * consumer in the decrypt path - see SUIT_WORKER_STACKSIZE in the app
+ * Makefile for the resulting worker-stack sizing. */
+#define WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM
 /* ML-KEM needs the SHA3 hashes and SHAKE XOFs (same note as ML-DSA above) */
 #define WOLFSSL_SHAKE128
 #define WOLFSSL_SHAKE256

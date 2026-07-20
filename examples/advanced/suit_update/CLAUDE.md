@@ -37,6 +37,9 @@ board/driver code.
 | `MANIFEST_ENCRYPTION_PLAN.md` | Manifest-encryption feature plan + status checklist — resume work from the first unchecked step |
 | `MANIFEST_ENCRYPTION_CHANGES.md` | Manifest-encryption code-change summary: wire format, opt-out contract, per-file change list, verification results, gotchas |
 | `manifest-encryption/` | Standalone host-only interop example (Python `cryptography` encrypt ↔ wolfCrypt decrypt); its `encrypt_manifest.py` doubles as the host-side manifest encryption tool |
+| `FIRMWARE_ENCRYPTION_PLAN.md` | Firmware **payload** encryption (streaming ChaCha20-Poly1305) plan + status checklist |
+| `FIRMWARE_ENCRYPTION_CHANGES.md` | Firmware-encryption code-change summary: detached-ciphertext wire format, streaming state machine, opt-out contract, measured samr21 numbers, native64 verification, gotchas (incl. the native worker-stack corruption find) |
+| `firmware-encryption/` | Standalone interop example (Python encrypt ↔ wolfCrypt **streaming** decrypt in 64 B chunks); its `encrypt_firmware.py --no-headers` is the host-side payload encryption tool (auto-detects X25519 vs ML-KEM device keys) — also invoked automatically by `suit/publish` |
 | `MLKEM_ENCRYPTION_PLAN.md` | Post-quantum (ML-KEM-768/1024) manifest-encryption plan + status checklist, incl. the **measured 12-combo samr21 feasibility matrix** |
 | `MLKEM_ENCRYPTION_CHANGES.md` | ML-KEM code-change summary: selection contract, per-file changes, matrix, native64 verification, gotchas |
 | `manifest-encryption-mlkem/` | ML-KEM standalone interop example (both levels via `--level`/`-DMLKEM_LEVEL`); its `encrypt_manifest.py --key` is the host-side ML-KEM encryption tool |
@@ -228,15 +231,64 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   swaps the X25519 recipient for an ML-KEM encapsulation (compile-time
   dispatch; private-use COSE algs -70768/-70769; device key = 64B FIPS 203
   seed; needs OpenSSL 3.5+ and the local wolfssl checkout, auto-selected).
-  Verified E2E on native64. samr21 (measured): Ed25519+ML-KEM-768/1024
-  **fit** (6.5/5.0KB RAM spare); **the full-PQ combo ML-DSA-44+ML-KEM-768
-  also fits (1,160B spare)** thanks to the `suit_pq_scratch` union
+  Verified E2E on native64. **samr21 (corrected 2026-07-20 — the
+  original link-time-only numbers were wrong, see below)**:
+  Ed25519+ML-KEM-768/1024 fit (2.0KB / 48B RAM spare — 1024 is essentially
+  zero-margin); **the full-PQ combo ML-DSA-44+ML-KEM-768 does NOT fit**
+  (overflows ~3.4KB, manifest-only) despite the `suit_pq_scratch` union
   (sys/include/suit/pq_scratch.h + libcose patch 0003: the never-concurrent
-  ML-DSA verify state and MlKemKey share one static allocation) plus an
-  exact 3,904B manifest buffer; ML-DSA-44+ML-KEM-1024 links at a thin 296B;
-  ML-DSA-65/87+KEM don't fit. Gotcha: tampered KEM ct fails via FIPS 203
-  implicit rejection (AEAD tag error, never a decaps error). See
-  `MLKEM_ENCRYPTION_PLAN.md` / `MLKEM_ENCRYPTION_CHANGES.md`.
+  ML-DSA verify state and MlKemKey share one static allocation) and exact
+  manifest buffer sizing — those savings are real but not enough once
+  wolfCrypt's ML-KEM runtime stack need (~8.5-9KB, see below) is properly
+  accounted for. ML-DSA-65/87+KEM don't fit either. Gotcha: tampered KEM
+  ct fails via FIPS 203 implicit rejection (AEAD tag error, never a
+  decaps error). **Critical gotcha (found on real hardware, not at
+  link time)**: wolfCrypt's `wc_mlkem.c` unconditionally `XMALLOC`s
+  multi-KB scratch buffers at runtime (up to 6,144B in one call) —
+  invisible to `arm-none-eabi-size`/`nm`, so every prior "measured RAM
+  feasibility" claim for ML-KEM on samr21 was link-time-only and wrong.
+  Symptom: `CEK derivation failed: -125` (MEMORY_E) despite "spare RAM"
+  at link time. Fixed via `WOLFSSL_NO_MALLOC` +
+  `WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM` + `WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM`
+  (`pkg/wolfssl/include/user_settings.h`, moves the buffers to a
+  `-fstack-usage`-measured ~8.5-9KB stack instead) plus a corrected,
+  enforced 9,216B `SUIT_WORKER_STACKSIZE` for any `ml-kem-%` build
+  (`examples/advanced/suit_update/Makefile`, any signing algorithm, any
+  non-native board) — the old 4KB stack would otherwise have silently
+  corrupted `.bss` at runtime (no MPU on Cortex-M0+), a worse failure
+  than the clean MEMORY_E actually hit. See
+  `MLKEM_ENCRYPTION_PLAN.md` / `MLKEM_ENCRYPTION_CHANGES.md` (correction
+  section) and `FIRMWARE_ENCRYPTION_CHANGES.md` (authoritative
+  re-measured table).
+- **Firmware payload encryption is on by default** —
+  `SUIT_FIRMWARE_ENCRYPT=0` opts out. The payload ships as a
+  detached-ciphertext COSE_Encrypt (74 B header ‖ ciphertext ‖ 16 B tag,
+  same device key/recipient scheme as manifest encryption, which the
+  module therefore implies) and is decrypted **while it streams in**
+  (wolfCrypt incremental AEAD + 16-byte trailing-tag lag, wrapper in
+  front of `_storage_helper` in `sys/suit/handlers_command_seq.c`;
+  engine: `sys/suit/encrypt/payload_decrypt.c`). Manifest image-digest/
+  size stay over the *plaintext* (`gen_manifest.py --enc-suffix .enc`);
+  `suit/publish` automates payload encryption + URIs. Plaintext payloads
+  pass through. Verified E2E on native64 (CoAP + VFS, tamper, opt-out,
+  and the full-PQ ML-DSA-44+ML-KEM-768 combo — **native only**, see
+  below); samr21 correctly measured (2026-07-20, see the ML-KEM bullet
+  above for the runtime-heap discovery that forced a re-measurement):
+  Ed25519+X25519 and ML-DSA-44+X25519 fit, ML-DSA-65 needs
+  `SUIT_FIRMWARE_ENCRYPT=0`, Ed25519+ML-KEM-768 fits (2.0KB spare), and
+  **the full-PQ combo ML-DSA-44+ML-KEM-768 does not fit** (~3.6KB short)
+  despite the extended `suit_pq_scratch` union (the payload header buffer
+  must never overlay the `MlKemKey`, the KEM ct lives inside it — that
+  saving is real, just insufficient alone). **Key gotchas**: nanocbor
+  can't `skip` tags and `leave_container` needs drained children
+  (full-unwind parser); the ML-DSA builds' 4 KB worker stack overflows on
+  *native* in the payload path's deeper call chain, corrupting `.bss`
+  (nondeterministic tag failures — now scoped to non-native); wolfCrypt's
+  ML-KEM heap-vs-stack issue above (found via this feature's samr21
+  bring-up, but it's a manifest-encryption-layer bug, not specific to
+  payload encryption). See `FIRMWARE_ENCRYPTION_CHANGES.md`,
+  `NATIVE_SETUP.md` step 6c, `SAMR21_EXAMPLES.md` Example F (unverified
+  draft, cookbook recipe 8 confirmed infeasible).
 - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
 - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —

@@ -490,6 +490,10 @@ PSEUDOMODULES += stm32mp1_eng_mode
 PSEUDOMODULES += suit_transport_%
 PSEUDOMODULES += suit_storage_%
 PSEUDOMODULES += suit_algo_%
+# streaming firmware-payload decryption: source compiled as part of the
+# suit_manifest_encrypt module dir (sys/suit/encrypt/payload_decrypt.c),
+# gated by this pseudomodule's MODULE_ define
+PSEUDOMODULES += suit_firmware_encrypt
 PSEUDOMODULES += sys_bus_%
 PSEUDOMODULES += tiny_strerror_as_strerror
 PSEUDOMODULES += tiny_strerror_minimal

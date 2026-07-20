@@ -1,0 +1,3061 @@
+diff --git a/dist/tools/suit/gen_manifest.py b/dist/tools/suit/gen_manifest.py
+index 0b0f28582e..667f7a4350 100755
+--- a/dist/tools/suit/gen_manifest.py
++++ b/dist/tools/suit/gen_manifest.py
+@@ -35,6 +35,11 @@ def parse_arguments():
+                         help='Manifest vendor uuid')
+     parser.add_argument('--uuid-class', '-C', default="native",
+                         help='Manifest class uuid')
++    parser.add_argument('--enc-suffix', default=None,
++                        help='Append this suffix (e.g. ".enc") to the URI '
++                             'basename while digest/size stay computed over '
++                             'the plaintext slot file — for encrypted '
++                             'firmware payloads (SUIT_FIRMWARE_ENCRYPT)')
+     parser.add_argument('slotfiles', nargs="+",
+                         help='The list of slot file paths')
+     return parser.parse_args()
+@@ -67,7 +72,10 @@ def main(args):
+     for slot, image in enumerate(images):
+         filename, offset, comp_name = image
+ 
+-        uri = os.path.join(args.urlroot, os.path.basename(filename))
++        basename = os.path.basename(filename)
++        if args.enc_suffix:
++            basename += args.enc_suffix
++        uri = os.path.join(args.urlroot, basename)
+ 
+         component = {
+             "install-id": comp_name,
+diff --git a/examples/advanced/suit_update/CLAUDE.md b/examples/advanced/suit_update/CLAUDE.md
+index 0be04a6157..8309589ff5 100644
+--- a/examples/advanced/suit_update/CLAUDE.md
++++ b/examples/advanced/suit_update/CLAUDE.md
+@@ -37,6 +37,9 @@ board/driver code.
+ | `MANIFEST_ENCRYPTION_PLAN.md` | Manifest-encryption feature plan + status checklist — resume work from the first unchecked step |
+ | `MANIFEST_ENCRYPTION_CHANGES.md` | Manifest-encryption code-change summary: wire format, opt-out contract, per-file change list, verification results, gotchas |
+ | `manifest-encryption/` | Standalone host-only interop example (Python `cryptography` encrypt ↔ wolfCrypt decrypt); its `encrypt_manifest.py` doubles as the host-side manifest encryption tool |
++| `FIRMWARE_ENCRYPTION_PLAN.md` | Firmware **payload** encryption (streaming ChaCha20-Poly1305) plan + status checklist |
++| `FIRMWARE_ENCRYPTION_CHANGES.md` | Firmware-encryption code-change summary: detached-ciphertext wire format, streaming state machine, opt-out contract, measured samr21 numbers, native64 verification, gotchas (incl. the native worker-stack corruption find) |
++| `firmware-encryption/` | Standalone interop example (Python encrypt ↔ wolfCrypt **streaming** decrypt in 64 B chunks); its `encrypt_firmware.py --no-headers` is the host-side payload encryption tool (auto-detects X25519 vs ML-KEM device keys) — also invoked automatically by `suit/publish` |
+ | `MLKEM_ENCRYPTION_PLAN.md` | Post-quantum (ML-KEM-768/1024) manifest-encryption plan + status checklist, incl. the **measured 12-combo samr21 feasibility matrix** |
+ | `MLKEM_ENCRYPTION_CHANGES.md` | ML-KEM code-change summary: selection contract, per-file changes, matrix, native64 verification, gotchas |
+ | `manifest-encryption-mlkem/` | ML-KEM standalone interop example (both levels via `--level`/`-DMLKEM_LEVEL`); its `encrypt_manifest.py --key` is the host-side ML-KEM encryption tool |
+@@ -228,15 +231,64 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
+   swaps the X25519 recipient for an ML-KEM encapsulation (compile-time
+   dispatch; private-use COSE algs -70768/-70769; device key = 64B FIPS 203
+   seed; needs OpenSSL 3.5+ and the local wolfssl checkout, auto-selected).
+-  Verified E2E on native64. samr21 (measured): Ed25519+ML-KEM-768/1024
+-  **fit** (6.5/5.0KB RAM spare); **the full-PQ combo ML-DSA-44+ML-KEM-768
+-  also fits (1,160B spare)** thanks to the `suit_pq_scratch` union
++  Verified E2E on native64. **samr21 (corrected 2026-07-20 — the
++  original link-time-only numbers were wrong, see below)**:
++  Ed25519+ML-KEM-768/1024 fit (2.0KB / 48B RAM spare — 1024 is essentially
++  zero-margin); **the full-PQ combo ML-DSA-44+ML-KEM-768 does NOT fit**
++  (overflows ~3.4KB, manifest-only) despite the `suit_pq_scratch` union
+   (sys/include/suit/pq_scratch.h + libcose patch 0003: the never-concurrent
+-  ML-DSA verify state and MlKemKey share one static allocation) plus an
+-  exact 3,904B manifest buffer; ML-DSA-44+ML-KEM-1024 links at a thin 296B;
+-  ML-DSA-65/87+KEM don't fit. Gotcha: tampered KEM ct fails via FIPS 203
+-  implicit rejection (AEAD tag error, never a decaps error). See
+-  `MLKEM_ENCRYPTION_PLAN.md` / `MLKEM_ENCRYPTION_CHANGES.md`.
++  ML-DSA verify state and MlKemKey share one static allocation) and exact
++  manifest buffer sizing — those savings are real but not enough once
++  wolfCrypt's ML-KEM runtime stack need (~8.5-9KB, see below) is properly
++  accounted for. ML-DSA-65/87+KEM don't fit either. Gotcha: tampered KEM
++  ct fails via FIPS 203 implicit rejection (AEAD tag error, never a
++  decaps error). **Critical gotcha (found on real hardware, not at
++  link time)**: wolfCrypt's `wc_mlkem.c` unconditionally `XMALLOC`s
++  multi-KB scratch buffers at runtime (up to 6,144B in one call) —
++  invisible to `arm-none-eabi-size`/`nm`, so every prior "measured RAM
++  feasibility" claim for ML-KEM on samr21 was link-time-only and wrong.
++  Symptom: `CEK derivation failed: -125` (MEMORY_E) despite "spare RAM"
++  at link time. Fixed via `WOLFSSL_NO_MALLOC` +
++  `WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM` + `WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM`
++  (`pkg/wolfssl/include/user_settings.h`, moves the buffers to a
++  `-fstack-usage`-measured ~8.5-9KB stack instead) plus a corrected,
++  enforced 9,216B `SUIT_WORKER_STACKSIZE` for any `ml-kem-%` build
++  (`examples/advanced/suit_update/Makefile`, any signing algorithm, any
++  non-native board) — the old 4KB stack would otherwise have silently
++  corrupted `.bss` at runtime (no MPU on Cortex-M0+), a worse failure
++  than the clean MEMORY_E actually hit. See
++  `MLKEM_ENCRYPTION_PLAN.md` / `MLKEM_ENCRYPTION_CHANGES.md` (correction
++  section) and `FIRMWARE_ENCRYPTION_CHANGES.md` (authoritative
++  re-measured table).
++- **Firmware payload encryption is on by default** —
++  `SUIT_FIRMWARE_ENCRYPT=0` opts out. The payload ships as a
++  detached-ciphertext COSE_Encrypt (74 B header ‖ ciphertext ‖ 16 B tag,
++  same device key/recipient scheme as manifest encryption, which the
++  module therefore implies) and is decrypted **while it streams in**
++  (wolfCrypt incremental AEAD + 16-byte trailing-tag lag, wrapper in
++  front of `_storage_helper` in `sys/suit/handlers_command_seq.c`;
++  engine: `sys/suit/encrypt/payload_decrypt.c`). Manifest image-digest/
++  size stay over the *plaintext* (`gen_manifest.py --enc-suffix .enc`);
++  `suit/publish` automates payload encryption + URIs. Plaintext payloads
++  pass through. Verified E2E on native64 (CoAP + VFS, tamper, opt-out,
++  and the full-PQ ML-DSA-44+ML-KEM-768 combo — **native only**, see
++  below); samr21 correctly measured (2026-07-20, see the ML-KEM bullet
++  above for the runtime-heap discovery that forced a re-measurement):
++  Ed25519+X25519 and ML-DSA-44+X25519 fit, ML-DSA-65 needs
++  `SUIT_FIRMWARE_ENCRYPT=0`, Ed25519+ML-KEM-768 fits (2.0KB spare), and
++  **the full-PQ combo ML-DSA-44+ML-KEM-768 does not fit** (~3.6KB short)
++  despite the extended `suit_pq_scratch` union (the payload header buffer
++  must never overlay the `MlKemKey`, the KEM ct lives inside it — that
++  saving is real, just insufficient alone). **Key gotchas**: nanocbor
++  can't `skip` tags and `leave_container` needs drained children
++  (full-unwind parser); the ML-DSA builds' 4 KB worker stack overflows on
++  *native* in the payload path's deeper call chain, corrupting `.bss`
++  (nondeterministic tag failures — now scoped to non-native); wolfCrypt's
++  ML-KEM heap-vs-stack issue above (found via this feature's samr21
++  bring-up, but it's a manifest-encryption-layer bug, not specific to
++  payload encryption). See `FIRMWARE_ENCRYPTION_CHANGES.md`,
++  `NATIVE_SETUP.md` step 6c, `SAMR21_EXAMPLES.md` Example F (unverified
++  draft, cookbook recipe 8 confirmed infeasible).
+ - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
+   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
+ - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —
+diff --git a/examples/advanced/suit_update/FIRMWARE_ENCRYPTION_CHANGES.md b/examples/advanced/suit_update/FIRMWARE_ENCRYPTION_CHANGES.md
+new file mode 100644
+index 0000000000..d7d205f395
+--- /dev/null
++++ b/examples/advanced/suit_update/FIRMWARE_ENCRYPTION_CHANGES.md
+@@ -0,0 +1,226 @@
++# SUIT firmware-payload encryption — code changes summary
++
++Companion to `FIRMWARE_ENCRYPTION_PLAN.md` (plan + status checklist), in
++the style of `MANIFEST_ENCRYPTION_CHANGES.md` / `MLKEM_ENCRYPTION_CHANGES.md`:
++what was changed to add firmware **image confidentiality** to the SUIT
++workflow, and what was learned doing it. The combined diff of every file
++listed below (code + docs, same convention as
++`manifest-encryption-implementation.patch`) is kept as
++`firmware-encryption-implementation.patch` in this directory; measured
++link outputs in `fw-encryption-feasibility-raw.txt`. Status: verified end-to-end on
++`native64` (X25519 recipient, both CoAP and VFS transports); samr21-xpro
++link-level feasibility measured (table below); real-hardware E2E pending
++(SAMR21_EXAMPLES.md Example F is an **unverified draft**).
++
++## What it does
++
++The host encrypts the firmware payload for one specific device; the device
++decrypts it **while it streams in from the transport** and stores only
++plaintext. Unlike the manifest (which fits in a buffer and is decrypted in
++place before parsing), a firmware image (~120 KB on real boards) never fits
++in RAM — hence streaming, using wolfCrypt's incremental ChaCha20-Poly1305
++API (`wc_ChaCha20Poly1305_Init/UpdateAad/UpdateData/Final/CheckTag`,
++already present in the pinned pkg wolfssl).
++
++- **Crypto**: identical to manifest encryption — same embedded device key
++  (`SUIT_ENC_SEC` → `suit_enc_seckey.h`), same recipient (X25519 ECDH-ES +
++  HKDF-256 by default; ML-KEM-768/1024 via the existing compile-time
++  dispatch), same CEK derivation and Enc_structure AAD, byte-exact CBOR
++  rules. The container/CEK primitives were refactored out of `decrypt.c`
++  into a shared internal header rather than duplicated.
++- **Container**: COSE_Encrypt with **detached ciphertext** (RFC 9052 §5.1):
++  `payload.bin.enc` = self-delimiting CBOR header (`ciphertext` slot =
++  `null`; 74 B for X25519, ~1.1/1.6 KB for ML-KEM) `|| ciphertext
++  (plaintext-length) || 16 B Poly1305 tag`. Wire format details:
++  `firmware-encryption/README.md`.
++- **Composition**: the manifest's image-digest/size stay computed over the
++  **plaintext** (gen_manifest's `file` key), only the URI points at the
++  `.enc` (`--enc-suffix`). Decrypt-then-verify: the signed digest over the
++  stored plaintext remains the authenticity anchor; the AEAD tag adds
++  early tamper rejection — a stream that fails the tag is never finalized
++  (`suit_storage_finish()` never runs, nothing is installed).
++- **Streaming state machine** (ported from the standalone example): chunks
++  accumulate in a static header buffer until the header parses (it spans
++  64-byte CoAP blocks; truncated CBOR fails cleanly → retry), then CEK +
++  AAD are set up once and each chunk is decrypted **in place** and
++  forwarded to the unchanged storage helper with **plaintext offsets**.
++  The 16 most recent bytes are always withheld (trailing-tag lag) since
++  the tag's position is only known at end-of-stream.
++- **Pass-through**: payloads not starting with CBOR tag 96 (`0xd8 0x60`)
++  are forwarded byte-identically, so plaintext payloads keep working on an
++  encryption-capable firmware (same contract as manifest encryption).
++
++## Opt-out contract
++
++On by default; `SUIT_FIRMWARE_ENCRYPT=0` opts out.
++
++| Side | `SUIT_FIRMWARE_ENCRYPT=1` (default) | `=0` |
++|---|---|---|
++| App build | `USEMODULE += suit_firmware_encrypt` (implies `suit_manifest_encrypt` — shared crypto + device key, even with `SUIT_MANIFEST_ENCRYPT=0`) | wrapper + header buffer absent (−1,140 B text / −392 B RAM on samr21; −2 KB / −448 B on native64) |
++| Device runtime | encrypted payloads stream-decrypted; plaintext payloads pass through | plaintext only; an encrypted payload fails the normal size check (`Image beyond size`) |
++| Host publish | `suit/publish` auto-encrypts payloads (`%.enc` rule) and generates manifests with `--enc-suffix .enc`; manual flow: `firmware-encryption/encrypt_firmware.py --no-headers --key <device key>` | unchanged pipeline |
++
++## Changed / added files
++
++| File | Change |
++|---|---|
++| `sys/suit/encrypt/payload_decrypt.c` (new) | The streaming decryptor: header reassembly/retry-parse, in-place chunk decrypt, tag-lag buffer, pass-through, `suit_payload_decrypt_start()/_helper()` |
++| `sys/include/suit/firmware_encrypt.h` (new) | Public API of the wrapper callback |
++| `sys/suit/encrypt/encrypt_internal.h` (new) | Shared internals: `cose_encrypt_msg_t`, `suit_cose_encrypt_parse()` (attached **or** detached, returns encoded length), `suit_cose_derive_cek()`, `suit_cose_build_enc_structure()` |
++| `sys/suit/encrypt/decrypt.c` | Parser rewritten as a full-unwind (drain + leave every container) that handles both ciphertext forms and yields the exact header length; shared functions un-static'd; manifest path rejects detached containers; behavior otherwise unchanged |
++| `sys/suit/handlers_command_seq.c` | `_dtv_fetch()`: with the module, `suit_payload_decrypt_helper` wraps `_storage_helper` for the CoAP and VFS transports |
++| `sys/include/suit/pq_scratch.h` | Union extended: `{ mldsa | { mlkem, fw_hdr } }` — the payload header buffer may be live *with* the KEM decaps state (the KEM ct lives in it) but never with the ML-DSA verify state; also hosts the `SUIT_FW_ENC_HDR_LEN` sizing (192 / 1216 / 1696 B) |
++| `sys/riotboot/flashwrite.c` | **Upstream bug fix** found during samr21 bring-up: RAW-mode `riotboot_flashwrite_putbytes()` flashed each full internal buffer at the *input segment's* position instead of the buffer-aligned block start — only correct for callers feeding buffer-aligned chunks (the plain CoAP path, by accident). The decryptor's chunks are shifted by the stripped 74 B COSE header, so blocks landed at wrong/unaligned addresses: AEAD tag OK, flash content garbled, `Verifying image digest` → `res=-7`. Fix is identity for aligned callers (`buffer_pos == 0`) |
++| `makefiles/pseudomodules.inc.mk` | `PSEUDOMODULES += suit_firmware_encrypt` (source rides in the `suit_manifest_encrypt` module dir) |
++| `sys/suit/Makefile.dep` | `suit_firmware_encrypt` → `suit_manifest_encrypt` |
++| `makefiles/suit.base.inc.mk` | `SUIT_FIRMWARE_ENCRYPT ?= 1` + host-flow note (no new keys: same `SUIT_ENC_SEC`) |
++| `makefiles/suit.inc.mk` | Publish automation when the flag is on: `%.enc` pattern rule (encrypt_firmware.py), `--enc-suffix .enc` in the gen_manifest call, `suit/publish` ships `.enc` payloads instead of plaintext |
++| `dist/tools/suit/gen_manifest.py` | `--enc-suffix`: appends to the URI basename while digest/size stay over the plaintext file |
++| `examples/advanced/suit_update/Makefile` | `SUIT_FIRMWARE_ENCRYPT ?= 1` → module selection; no `SUIT_MANIFEST_BUFSIZE` impact (the payload streams past the manifest buffer). Also: the ML-DSA builds' `SUIT_WORKER_STACKSIZE` handling is now scoped to non-native boards and unified with the ML-KEM override below (see gotchas) |
++| `pkg/wolfssl/include/user_settings.h` | **RAM-feasibility bug fix** (2026-07-20, see gotchas): `MODULE_WOLFCRYPT_MLKEM` block gains `WOLFSSL_NO_MALLOC` + `WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM` + `WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM` — moves wolfCrypt's ML-KEM scratch buffers from an unconditional multi-KB heap `XMALLOC` (invisible to link-time RAM analysis, fails outright on a newlib heap this small) to a bounded, `-fstack-usage`-measured stack allocation |
++| `examples/advanced/suit_update/Makefile` (stack sizing) | `SUIT_WORKER_STACKSIZE` consolidated to one emission point: `?= 4096` for ML-DSA, unconditionally raised to `9216` (measured peak, ~8.5-9KB) whenever `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-%` is selected, regardless of signing algorithm — the old scheme only applied the ML-DSA default (an insufficient 4096) and never touched Ed25519+ML-KEM builds at all |
++| `examples/advanced/suit_update/firmware-encryption/` (new, plan Step 1) | Standalone interop example (Python encrypt ↔ wolfCrypt *streaming* decrypt in 64 B chunks) + wire-format README; `encrypt_firmware.py` doubles as the host-side tool, auto-detecting X25519 vs ML-KEM device keys |
++
++## samr21-xpro feasibility — authoritative table (corrected 2026-07-20)
++
++**Supersedes every ML-KEM samr21 number previously published** (in this
++file's earlier revision and in `MLKEM_ENCRYPTION_PLAN.md`/`_CHANGES.md`)
++— those were link-time-only (`arm-none-eabi-size`/`nm`) and never
++accounted for wolfCrypt's runtime heap/stack use, which doesn't show up
++in `.data`/`.bss`. See the gotchas section for the full story; this table
++is the result *after* the `WOLFSSL_NO_MALLOC` fix and the corrected
++9,216 B worker stack for ML-KEM builds.
++
++`BOARD=samr21-xpro make clean all` per combo; RAM = data+bss of
++`suit_update.elf` vs 32,768 B; ❌ = `.bss` overflow of `slot0.elf`
++(link-time — now a trustworthy signal, not a false negative).
++
++| Signing × Encryption (firmware + manifest enc on) | Result |
++|---|---|
++| Ed25519 + X25519 | ✅ 21,552 B RAM (**11.2 KB spare**); with `SUIT_FIRMWARE_ENCRYPT=0`: 21,160 → the decryptor costs **+392 B RAM / +1,140 B text** |
++| ML-DSA-44 + X25519 | ✅ 31,280 B RAM (**1,488 B spare**) |
++| ML-DSA-65 + X25519 | ❌ overflow **308 B** (baseline had 88 B spare — build Example B with `SUIT_FIRMWARE_ENCRYPT=0`) |
++| ML-DSA-87 + anything | ❌ (already overflows without any encryption) |
++| **Ed25519 + ML-KEM-768, manifest only** | ✅ 29,328 B RAM (**3,440 B spare**) |
++| **Ed25519 + ML-KEM-768, manifest + payload** | ✅ 30,736 B RAM (**2,032 B spare**) |
++| **Ed25519 + ML-KEM-1024, manifest + payload** | ✅ 32,720 B RAM (**48 B spare — essentially zero margin, do not build production images on this combo without re-verifying after any code change**) |
++| **ML-DSA-44 + ML-KEM-768, manifest only (full PQ)** | ❌ **overflows 3,364 B** (previously miscounted as "1,160 B spare") |
++| **ML-DSA-44 + ML-KEM-768, manifest + payload (full PQ)** | ❌ **overflows 3,556 B** (previously miscounted as "968 B spare") — this is the exact combo that produced `CEK derivation failed: -125` on real hardware before this fix, and would corrupt `.bss` at runtime even after the heap fix if the worker stack weren't also corrected |
++| ML-DSA-44/65 + ML-KEM-1024, any | ❌ (strictly worse than the 768 rows above) |
++
++**Practical upshot: the full-PQ combo (post-quantum signature AND
++post-quantum encryption together) does not fit on samr21-xpro's 32 KB
++RAM, full stop** — not a tuning problem, ~3.3-3.6 KB short even with
++every available wolfCrypt memory-reduction flag enabled. Post-quantum
++*encryption* alone (classical Ed25519 signature + ML-KEM-768/1024
++manifest/payload encryption) does fit and is the recommended samr21 PQ
++demo instead — see `SAMR21_EXAMPLES.md`'s Variant cookbook, recipe 7.
++
++The ML-KEM payload header buffer (1,216/1,696 B) still overlays the idle
++ML-DSA verify state via the `suit_pq_scratch` union in ML-DSA builds (that
++part of the earlier RAM work was real and correct) — it just isn't enough
++on its own once the stack requirement is accounted for.
++
++## Verification (native64, 2026-07-19)
++
++| Case | Result |
++|---|---|
++| Encrypted payload via `suit fetch file:///nvm0/...` (VFS, 308 B payload, header straddling the first 128 B chunk) | `decrypting payload (header 74 bytes)` → `payload decrypted (308 bytes)` → digest verified → installed |
++| Encrypted payload over CoAP blockwise (64 B blocks, 1,305 B payload, tap networking + aiocoap-fileserver) | full update successful, `storage_content` shows plaintext |
++| Tampered ciphertext byte in the `.enc` | `payload authentication failed` **before** `Finalizing payload store`; fetch aborts, nothing installed |
++| Plaintext payload on encryption-capable firmware | `payload not encrypted, passing through` → normal update |
++| `SUIT_FIRMWARE_ENCRYPT=0` build | symbol absent from image; plaintext update OK; encrypted payload rejected with `Image beyond size` (398 B stream vs 272 B image-size) |
++| Host tool key auto-detection | X25519 / ML-KEM-768 / ML-KEM-1024 device keys all self-test OK |
++| **Full-PQ E2E on native64** (ML-DSA-44 signature + ML-KEM-768 encrypted manifest **and** encrypted payload, 2026-07-20) | `decrypting payload (header 1126 bytes)` → `payload decrypted (1048 bytes)` → digest verified → installed. **native only** — this combo does NOT fit samr21-xpro's RAM (see the feasibility table); native's effectively-unlimited stack masked that until real hardware bring-up hit it |
++| Standalone example | streaming MATCH in 64 B chunks (12.8 KB payload); tampered ciphertext / tag / nonce all rejected |
++
++## Gotchas / lessons learned
++
++- **wolfCrypt ML-KEM heap-allocates regardless of static RAM headroom —
++  link-time "measured" RAM feasibility for ML-KEM was systematically
++  wrong** (found on real samr21-xpro hardware, 2026-07-20, the biggest
++  finding of this bring-up round). Symptom: `suit: manifest CEK
++  derivation failed: -125` (wolfCrypt `MEMORY_E`) on the ML-DSA-44 +
++  ML-KEM-768 combo — despite that exact combo being previously "measured"
++  at 968-1,160 B RAM spare via `arm-none-eabi-size`/`nm`. Cause: without
++  `WOLFSSL_NO_MALLOC`, `wc_MlKemKey_MakeKeyWithRandom()` unconditionally
++  `XMALLOC`s a scratch buffer up to `(k+1)*k*MLKEM_N*sizeof(sword16)` =
++  6,144 B (k=3, ML-KEM-768) from the C heap — code that runs at
++  *runtime*, so it is invisible to any static `.data`/`.bss` measurement.
++  The newlib heap (a few hundred B to a few KB depending on other tuning)
++  can never satisfy that in one call. **The lesson generalizes: static
++  link-time RAM analysis only bounds `.data`+`.bss`+the declared stack
++  array — any code path that calls `malloc`/`XMALLOC` needs runtime
++  verification, full stop, no matter how much "spare" `size` reports.**
++  Fix: `WOLFSSL_NO_MALLOC` + `WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM` +
++  `WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM` in `pkg/wolfssl/include/
++  user_settings.h` move the buffers to the stack instead — bounded and
++  measurable via `-fstack-usage`, which is how the real number (~8.5-9KB
++  peak, `wc_MlKemKey_Decapsulate` → `mlkemkey_decapsulate` →
++  `mlkemkey_encapsulate`, the last one alone consuming 4,664 B per its
++  `.su` output) was obtained instead of guessed. That number is roughly
++  **double** the 4 KB worker stack this feature was previously built and
++  "verified" with — meaning every earlier samr21 ML-KEM run that
++  happened to link would, on real hardware, have silently overflowed the
++  worker stack into adjacent `.bss` (no MPU on Cortex-M0+) rather than
++  failing cleanly. The app Makefile now forces
++  `SUIT_WORKER_STACKSIZE=9216` whenever `SUIT_MANIFEST_ENCRYPT_ALGO=
++  ml-kem-%` is selected (any signing algorithm, any board except native),
++  turning an infeasible combo into a loud, honest link-time `.bss`
++  overflow instead of a silent field failure. See the corrected
++  feasibility table above and `MLKEM_ENCRYPTION_CHANGES.md`'s correction
++  section (that document's original matrix is superseded by this one).
++- **riotboot flashwrite silently assumes buffer-aligned chunks** (found on
++  real samr21 hardware, 2026-07-20): first hardware run decrypted the full
++  104,404 B image (tag OK — the streaming crypto worked first try on
++  hardware) but failed the digest with `Erasing bad payload` / `res=-7`.
++  Cause: RAW-mode `riotboot_flashwrite_putbytes()` wrote each filled
++  buffer to the *segment* position rather than the aligned block start —
++  harmless for the 64 B-aligned plaintext CoAP flow, fatal once the
++  decryptor's forwarded chunks are shifted by the stripped COSE header
++  (38 B first chunk). One-line fix in `sys/riotboot/flashwrite.c`;
++  diagnosis shortcut for the future: tag passes + digest fails + host
++  `sha256(decrypt(.enc)) == manifest digest` ⇒ the storage write path,
++  not the crypto.
++- **The 4 KB ML-DSA worker stack overflows on native** — found the hard
++  way as *nondeterministic* Poly1305 tag mismatches on correct plaintext
++  in the full-PQ build: `SUIT_WORKER_STACKSIZE=4096` (set for all ML-DSA
++  builds to fit samr21's 32 KB RAM) is far too small for x86-64 stack
++  frames once the payload path nests the ML-KEM decapsulation inside the
++  transport callback (worker → `suit_parse` → fetch → vfs/coap cb →
++  `derive_cek`), and the overflow silently corrupts adjacent `.bss` —
++  here the static AEAD state. The override is now scoped to non-native
++  boards (native uses the 3×`THREAD_STACKSIZE_LARGE` default). Sibling of
++  the `MLDSA_HARDWARE_FIXES.md` stack lesson, in the other direction. On
++  samr21 the same deeper call chain runs within the 4 KB Cortex-M stack —
++  re-measure the watermark with `ps` during hardware bring-up.
++- **nanocbor can't skip tags / needs drained children**: `nanocbor_skip()`
++  does not descend into tagged items, and `nanocbor_leave_container()`
++  positions the parent from the *child's* cursor — the only way to learn
++  the exact COSE header length (where the ciphertext stream starts) is to
++  walk and drain every nested container. This full unwind doubles as the
++  completeness check for retry-parsing a header that arrives split across
++  transport chunks.
++- **Trailing-tag lag**: with detached AEAD content the tag is the last
++  16 bytes of the stream, at a position only known at EOF — the decryptor
++  must permanently withhold the 16 most recent bytes. Off-by-one here
++  corrupts the final block *and* breaks authentication; the standalone
++  example exercises exactly this (chunk sizes 64, header 74 → first
++  ciphertext bytes arrive inside the header buffer).
++- **Storage helper contract**: the wrapper forwards *plaintext offsets*,
++  so `_storage_helper`'s image-size checks and the digest verification
++  work unchanged; the final `more=0` call is only forwarded **after**
++  `CheckTag` passes, so a bad stream never reaches
++  `suit_storage_finish()`. (A failed fetch can still leave a decrypted
++  prefix in the inactive slot/region — same upstream TODO as the
++  plaintext flow.)
++- **RAM storage regions on native are 2 KB** — that limit applies to the
++  *plaintext* size; a bigger test payload fails at
++  `Unable to start storage backend` (res=-50), before any decryption.
++- **Per-device artifacts**: like encrypted manifests, one `.enc` payload
++  per device key. `suit/publish` publishes only the `.enc` files when the
++  flag is on — publishing the plaintext next to them would defeat the
++  purpose.
++- Prototype caveats inherited from manifest encryption: device key
++  embedded in the image, no sender authentication from ECDH-ES/KEM alone
++  (the signed manifest is the anchor), not security-audited.
+diff --git a/examples/advanced/suit_update/FIRMWARE_ENCRYPTION_PLAN.md b/examples/advanced/suit_update/FIRMWARE_ENCRYPTION_PLAN.md
+new file mode 100644
+index 0000000000..20d6dfc427
+--- /dev/null
++++ b/examples/advanced/suit_update/FIRMWARE_ENCRYPTION_PLAN.md
+@@ -0,0 +1,178 @@
++# Firmware image encryption (ChaCha20-Poly1305) — implementation plan
++
++Living plan document (sibling of `MANIFEST_ENCRYPTION_PLAN.md` /
++`MLKEM_ENCRYPTION_PLAN.md`, whose crypto pipeline this reuses) — future
++sessions resume from the first unchecked step.
++
++## Context
++
++The SUIT workflow now has manifest confidentiality (X25519 or ML-KEM
++recipient + ChaCha20-Poly1305, decrypted in `sys/suit/encrypt/decrypt.c`
++before `suit_parse()`), but the **firmware image itself still travels in
++plaintext**: the manifest's URI points at the raw `payload.bin` /
++`slotN.riot.bin`, which anyone on the path can read. Goal: encrypt the
++firmware payload on the host with ChaCha20-Poly1305 and decrypt it
++on-device **while it streams in** — the image (up to ~120 KB on real
++boards) never fits in RAM, so unlike the manifest there is no
++buffer-then-decrypt option.
++
++## Design
++
++Reuse the manifest-encryption crypto wholesale — same device key
++(`SUIT_ENC_SEC` → embedded `suit_enc_seckey.h`), same recipient structure
++(X25519 ECDH-ES + HKDF-256 by default, ML-KEM-768/1024 via the existing
++compile-time dispatch), same CEK derivation (HKDF-SHA256 with the
++byte-exact COSE_KDF_Context) and AAD (Enc_structure). Only the container
++changes: the ciphertext is **detached** (RFC 9052 §5.1 detached content),
++because it must stream past the CBOR parser:
++
++```
++payload.bin.enc :=
++  96([                      / COSE_Encrypt, CBOR tag 96                 /
++    << {1: 24} >>,          / protected: alg = ChaCha20/Poly1305        /
++    {5: h'<nonce 12B>'},    / unprotected: IV                           /
++    null,                   / ciphertext DETACHED (streams after this)  /
++    [[                      / one recipient — identical to the manifest /
++      << {1: -25} >>,       /   container (or -70768/-70769 for ML-KEM) /
++      {-1: {1:1, -1:4, -2: h'<ephemeral pub 32B>'}},
++      h''
++    ]]
++  ])
++  || ciphertext (same length as the plaintext image)
++  || Poly1305 tag (16 B)
++```
++
++- **Streaming decrypt on-device**: wolfCrypt's incremental AEAD API
++  (`wc_ChaCha20Poly1305_Init/UpdateAad/UpdateData/Final` + `_CheckTag`,
++  present in the pinned pkg wolfssl) processes each transport chunk in
++  place. A 16-byte lag buffer withholds the trailing tag from decryption
++  until the transfer ends (the tag position is only known at EOF).
++- **Hook point**: a wrapper around `_storage_helper` in
++  `sys/suit/handlers_command_seq.c`'s `_dtv_fetch()` — the single funnel
++  both the CoAP blockwise and VFS transports already call with strictly
++  sequential `(offset, buf, len, more)` chunks. The wrapper buffers/parses
++  the COSE header (spans multiple 64-byte CoAP blocks; retry-parse until
++  the self-delimiting CBOR is complete), derives the CEK, then forwards
++  **plaintext chunks with plaintext offsets** to the unchanged storage
++  helper. Tag verified *before* the final `more=0` forward, so a tampered
++  stream never gets finalized/installed.
++- **Manifest stays the security anchor**: `gen_manifest.py` keeps hashing
++  the **plaintext** file for image-digest/size (suit-tool's `file` key)
++  while the URI points at `<file>.enc` (new `--enc-suffix` option). The
++  device-side digest check over the decrypted, stored image is untouched —
++  decrypt-then-verify, exactly like the manifest composition. The AEAD tag
++  adds early tamper rejection; authenticity still comes from the signed
++  manifest.
++- **Pass-through**: a payload that does not start with `0xd8 0x60` (CBOR
++  tag 96) is forwarded unmodified, so an encryption-capable firmware still
++  accepts plaintext payloads (same contract as the manifest feature).
++- **Module**: pseudomodule `suit_firmware_encrypt` (depends on
++  `suit_manifest_encrypt` for the shared parse/CEK code, which moves
++  behind a small internal header in `sys/suit/encrypt/`). App flag
++  `SUIT_FIRMWARE_ENCRYPT ?= 1` mirroring `SUIT_MANIFEST_ENCRYPT`, opt-out
++  with `=0` (module + wrapper absent entirely).
++- **Host tooling**: `firmware-encryption/encrypt_firmware.py` (standalone
++  example + real tool, like the two `encrypt_manifest.py` siblings);
++  `suit.inc.mk` gains a `%.enc` rule + publishes `.enc` payloads (and only
++  those) when the flag is on; `gen_manifest.py --enc-suffix .enc`.
++
++## Status checklist
++
++- [x] Step 0: this plan saved to the repo (2026-07-19)
++- [x] Step 1: standalone interop example
++  `examples/advanced/suit_update/firmware-encryption/`
++  (`encrypt_firmware.py`, `wolfcrypt-sample.c` doing *chunked streaming*
++  decrypt with the incremental API + 16-byte tag lag, README) — verified
++  2026-07-19: 12,828 B test payload streamed in 64 B chunks → MATCH
++  (header 74 B, straddling the first chunk boundary); tampered
++  ciphertext/tag/nonce all rejected at the tag check; 12.7 KB real-file
++  input OK; Python self-test OK. Gotcha found: nanocbor's `skip` doesn't
++  descend into tags and `leave_container` needs drained children — the
++  header parser must fully unwind every container to learn the header
++  length (recorded in the example README).
++- [x] Step 2: samr21-xpro feasibility measured (2026-07-19, link-level
++  `make clean all` per combo): decryptor costs +392 B RAM / +1,140 B
++  text; Ed25519 and ML-DSA-44 (X25519) combos fit; ML-DSA-65 overflows
++  by 308 B (documented: `SUIT_FIRMWARE_ENCRYPT=0` there). **⚠️ The
++  original full-PQ number here ("968 B spare") was WRONG — corrected in
++  Step 6 below after real hardware bring-up; see
++  `FIRMWARE_ENCRYPTION_CHANGES.md`'s authoritative table.**
++- [x] Step 3: device integration + host tooling (2026-07-19) — see
++  `FIRMWARE_ENCRYPTION_CHANGES.md` for the per-file list; includes
++  `suit/publish` automation (`%.enc` rule + `--enc-suffix`, verified
++  against a real 122 KB samr21 slot image) and ML-KEM auto-detection in
++  `encrypt_firmware.py`
++- [x] Step 4: E2E on `BOARD=native` (2026-07-19/20) — encrypted payload
++  over **CoAP** (64 B blocks) and **VFS**; tampered payload rejected
++  before finalize; plaintext pass-through; opt-out build clean; **full-PQ
++  E2E on native only** (ML-DSA-44 + ML-KEM-768 manifest *and* payload) —
++  which exposed and fixed a pre-existing native worker-stack overflow
++  (4 KB ML-DSA stack vs x86-64 frames; now scoped to non-native boards)
++- [x] Step 5: docs, round 1 (2026-07-20) — `FIRMWARE_ENCRYPTION_CHANGES.md`,
++  `NATIVE_SETUP.md` step 6c + log lines + opt-out note,
++  `SAMR21_EXAMPLES.md` Example F (**unverified draft** + F.9 bring-up
++  checklist), `CLAUDE.md` tables/gotchas
++- [x] Step 6: real-hardware (samr21-xpro) bring-up, first attempt
++  (2026-07-20) — hit `res=-7` digest failure on encrypted payload
++  (**fixed**: `sys/riotboot/flashwrite.c` chunk-alignment bug), then a
++  manifest-buffer-too-small error on the full-PQ combo (**fixed**:
++  `SUIT_MANIFEST_BUFSIZE` recalculated from real `suit/publish` URI
++  lengths), then a mute-shell heap exhaustion (**fixed**: pktbuf
++  rebalance), then `CEK derivation failed: -125` on the full-PQ combo
++  — this last one was **not a bug in this feature**, but a pre-existing
++  wolfCrypt ML-KEM defect: unconditional multi-KB heap allocation,
++  invisible to every prior link-time RAM measurement. **Fixed**
++  (`WOLFSSL_NO_MALLOC` + stack-size correction, see
++  `FIRMWARE_ENCRYPTION_CHANGES.md` gotchas) and **re-measured for real**:
++  the full-PQ combo (any ML-DSA + any ML-KEM) does not fit samr21's
++  32 KB RAM (~3.3-3.6 KB short, not tunable further); Ed25519 +
++  ML-KEM-768/1024 does fit (2.0-3.4 KB spare) and is now the recommended
++  samr21 PQ-encryption target. Outstanding: an actual OTA cycle on
++  hardware with the now-corrected Ed25519+ML-KEM-768 build (F.9
++  checklist), and the flashwrite-fix retest for the plain payload-only
++  combo that surfaced it.
++- [ ] Step 7: docs, round 2 (2026-07-20) — correct every previously
++  "measured" ML-KEM samr21 number across
++  `MLKEM_ENCRYPTION_PLAN.md`/`_CHANGES.md`, `SAMR21_EXAMPLES.md`'s
++  cookbook and Example F, `CLAUDE.md`
++
++## samr21-xpro feasibility (Step 2, review before implementing)
++
++Baselines: measured matrix in `MLKEM_ENCRYPTION_PLAN.md`. Expected adds
++from this feature (mostly .bss):
++
++- `ChaChaPoly_Aead` streaming state ≈ 400 B + header buffer (~192 B
++  X25519 / ~1.3 KB ML-KEM-768 / ~1.8 KB ML-KEM-1024, sized like the
++  manifest-buffer bumps) + 16 B lag + bookkeeping → ~0.6 KB (X25519),
++  ~1.8/2.3 KB (ML-KEM).
++- Flash: header parsing + wrapper ≈ 1–2 KB (crypto code fully shared with
++  the already-linked manifest decrypt).
++- **MEASURED, corrected 2026-07-20** — see the authoritative table in
++  `FIRMWARE_ENCRYPTION_CHANGES.md` (supersedes an earlier, wrong version
++  of this section that never accounted for wolfCrypt's runtime ML-KEM
++  heap/stack use — see that document's gotchas for the full story).
++  Summary (RAM/32,768 B): Ed25519+X25519 ✅ 21,552 (11.2 KB spare; +392 B
++  / +1,140 B text vs opt-out); ML-DSA-44+X25519 ✅ 31,280 (1,488 B
++  spare); ML-DSA-65+X25519 ❌ −308 B (was 88 B spare →
++  `SUIT_FIRMWARE_ENCRYPT=0` there); **Ed25519+ML-KEM-768 ✅ 30,736
++  (2,032 B spare)**; Ed25519+ML-KEM-1024 ✅ 32,720 (48 B spare, near
++  zero margin); **ML-DSA-44+ML-KEM-768 (full PQ) ❌ overflows 3,556 B**
++  — does not fit, full stop, not a tuning problem. The payload header
++  buffer still joins the `suit_pq_scratch` union as a *sibling* of
++  `MlKemKey` in ML-DSA builds (the KEM ct being decapsulated lives
++  inside the header buffer, so they must not overlap each other; both
++  overlay the idle ML-DSA verify state) — that saving is real, it's just
++  not enough once the ~8.5-9KB ML-KEM decapsulation stack requirement is
++  correctly accounted for.
++
++## Verification plan
++
++Step 1 (standalone): Python self-test; C sample decrypts in 64-byte
++chunks (proving header-spans-chunk and tag-lag logic) → MATCH; tamper
++ciphertext / tag / header → all rejected.
++
++Step 4 (native E2E, per `NATIVE_SETUP.md`): encrypted payload +
++encrypted manifest full update (`storage_content` shows plaintext);
++tampered `.enc` payload → fetch fails, nothing installed; plaintext
++payload on encryption-capable firmware → pass-through; seqnr bumped
++every round; `SUIT_FIRMWARE_ENCRYPT=0` build byte-identical behavior.
+diff --git a/examples/advanced/suit_update/Makefile b/examples/advanced/suit_update/Makefile
+index 1b8fb0ebe1..c31e4a8b26 100644
+--- a/examples/advanced/suit_update/Makefile
++++ b/examples/advanced/suit_update/Makefile
+@@ -65,7 +65,13 @@ ifneq (,$(filter ml-dsa-%,$(SUIT_KEY_ALGO)))
+   # pkg/libcose's wolfcrypt_mldsa.c backend), not on the worker stack, so
+   # the default 6KB stack suffices for the verify itself; shrink it to 4KB
+   # to fit the ~10KB (ML-DSA-65) static key state within a 32KB RAM budget.
+-  CFLAGS += -DSUIT_WORKER_STACKSIZE=4096
++  # Constrained boards only: native's x86-64 stack frames overflow 4KB in
++  # the deeper streaming-payload-decrypt call chain (worker → parse →
++  # fetch → transport callback → ML-KEM decaps), silently corrupting
++  # adjacent .bss — the AEAD state, seen as nondeterministic Poly1305 tags.
++  # (Emitted once, after SUIT_MANIFEST_ENCRYPT_ALGO below has had a chance
++  # to raise this further for ML-KEM - see there for why.)
++  SUIT_WORKER_STACKSIZE ?= 4096
+ else
+   SUIT_MANIFEST_BUFSIZE = 640
+ endif
+@@ -84,17 +90,60 @@ SUIT_MANIFEST_ENCRYPT_ALGO ?= x25519
+ ifeq (1,$(SUIT_MANIFEST_ENCRYPT))
+   USEMODULE += suit_manifest_encrypt
+   ifneq (,$(filter ml-kem-%,$(SUIT_MANIFEST_ENCRYPT_ALGO)))
++    # wc_MlKemKey_Decapsulate()'s call chain (mlkemkey_decapsulate ->
++    # mlkemkey_encapsulate, invoked internally for the FIPS 203
++    # implicit-rejection check) peaks at ~8.5-9KB of stack (measured via
++    # -fstack-usage: 1232+2072+4664+~600B nested), even after enabling
++    # every wolfCrypt small-memory knob (WOLFSSL_NO_MALLOC +
++    # MAKEKEY/ENCAPSULATE_SMALL_MEM in user_settings.h - without those,
++    # it's worse: an unconditional ~6-10KB heap XMALLOC, invisible to
++    # link-time RAM analysis, that fails outright on any newlib heap this
++    # small - found as runtime "CEK derivation failed: -125" on real
++    # samr21-xpro hardware). The pre-existing 4KB ML-DSA worker stack
++    # (below) silently corrupts adjacent .bss on overflow - no MPU on
++    # Cortex-M0+ - so force an explicit, measured-adequate size here
++    # rather than let an ml-kem-* build "successfully" produce a
++    # time-bomb image. This overflows the RAM budget outright on
++    # anything but the most spacious combo, turning the danger into a
++    # loud, honest link error instead: see FIRMWARE_ENCRYPTION_CHANGES.md
++    # / MLKEM_ENCRYPTION_CHANGES.md for which combos (if any) still fit.
++    # Applies regardless of SUIT_KEY_ALGO - an Ed25519 signing build with
++    # ML-KEM manifest encryption needs this override just as much as an
++    # ML-DSA one; without it, Ed25519 builds silently keep worker.c's
++    # un-sized-for-this default (3 * THREAD_STACKSIZE_LARGE, ~6KB) instead.
++    SUIT_WORKER_STACKSIZE := 9216
+     USEMODULE += wolfcrypt_mlkem
+     USEMODULE += wolfcrypt_mlkem$(subst ml-kem-,,$(SUIT_MANIFEST_ENCRYPT_ALGO))
+     ifeq (ml-dsa-44/ml-kem-768,$(SUIT_KEY_ALGO)/$(SUIT_MANIFEST_ENCRYPT_ALGO))
+       # The full-PQ combo is squeezed into samr21-xpro's 32KB RAM (together
+-      # with the suit_pq_scratch union, see sys/include/suit/pq_scratch.h):
+-      # exact measured need instead of the additive 3072+1216 - a 2632B
+-      # ML-DSA-44 manifest + 1144B COSE_Encrypt/KEM overhead + 128B margin.
+-      SUIT_MANIFEST_BUFSIZE := 3904
+-      # Reserve lever if RAM gets tight again (e.g. bigger app): SUIT's 64B
+-      # CoAP blocks don't need the default 6KB of pktbuf.
+-      # CFLAGS += -DCONFIG_GNRC_PKTBUF_SIZE=4096
++      # with the suit_pq_scratch union, see sys/include/suit/pq_scratch.h).
++      # The buffer must hold the encrypted manifest AS FETCHED (decryption
++      # happens in place after the transfer completes) - undersizing it
++      # doesn't fail loudly with a crypto error, it fails earlier with
++      # "suit_worker: error getting manifest" from
++      # nanocoap_get_blockwise_url_to_buf() refusing to exceed the buffer.
++      # 3904B (2632B assumed ML-DSA-44 manifest + 1144B COSE_Encrypt/KEM
++      # overhead + 128B margin) was measured against a short test path and
++      # undershot: real `suit/publish` URIs are longer
++      # (SUIT_COAP_BASEPATH=fw/$(APPLICATION)/$(BOARD), doubled across two
++      # slot components), producing a 2853B signed manifest -> 3997B
++      # encrypted - 93B over budget. Sized here from the real number with
++      # a wider margin for URI/hostname variation across setups.
++      SUIT_MANIFEST_BUFSIZE := 4160
++      # Leftover RAM after static allocation IS the newlib heap, and stdio
++      # needs ~1KB of it: at 964B free (this combo + firmware encryption,
++      # original 3904B manifest buffer) the board booted with a MUTE SHELL
++      # - network up, prompt echoing, every printf silently empty (no boot
++      # banner). Reclaim from pktbuf: SUIT's 64B CoAP blocks don't need
++      # 2KB; the trade-off is that frames >~1.15KB (e.g. full-MTU ethos
++      # pings) no longer fit. The cut must track SUIT_MANIFEST_BUFSIZE
++      # above it (both eat the same static RAM budget) - 592B for the
++      # original buffer size verified restoring a working shell; the wider
++      # buffer needs an extra 256B trimmed off pktbuf to keep the same
++      # heap margin. Set as both make var (skips the generic 2000B default
++      # below) and define.
++      CONFIG_GNRC_PKTBUF_SIZE = 1152
++      CFLAGS += -DCONFIG_GNRC_PKTBUF_SIZE=1152
+     else ifeq (ml-kem-1024,$(SUIT_MANIFEST_ENCRYPT_ALGO))
+       SUIT_MANIFEST_BUFSIZE := $(shell expr $(SUIT_MANIFEST_BUFSIZE) + 1696)
+     else
+@@ -109,6 +158,35 @@ ifneq (640,$(SUIT_MANIFEST_BUFSIZE))
+   CFLAGS += -DSUIT_MANIFEST_BUFSIZE=$(SUIT_MANIFEST_BUFSIZE)
+ endif
+ 
++# Emitted once both the ML-DSA (SUIT_WORKER_STACKSIZE ?= 4096) and ML-KEM
++# (SUIT_WORKER_STACKSIZE := 9216, wins if both apply) blocks above have had
++# their say; unset (pure Ed25519 + X25519/off) leaves worker.c's own
++# built-in default untouched. Non-native only - see the ML-DSA block for
++# why native needs the opposite treatment (its default is too *small*
++# there, not too large).
++ifneq (,$(SUIT_WORKER_STACKSIZE))
++  ifeq (,$(filter native native32 native64,$(BOARD)))
++    CFLAGS += -DSUIT_WORKER_STACKSIZE=$(SUIT_WORKER_STACKSIZE)
++  endif
++endif
++
++# Firmware-payload confidentiality: on by default, opt out with
++# SUIT_FIRMWARE_ENCRYPT=0. Streams the detached-ciphertext COSE_Encrypt
++# payload container through an in-place ChaCha20-Poly1305 decrypt during
++# the fetch (FIRMWARE_ENCRYPTION_PLAN.md); shares the device key and
++# recipient scheme (x25519 / ml-kem-*) with manifest encryption, which it
++# therefore implies (sys/suit/Makefile.dep). Plaintext payloads still pass
++# through. Host side: encrypt payloads with
++# firmware-encryption/encrypt_firmware.py and point the manifest URI at
++# the .enc via gen_manifest.py --enc-suffix (manual, like the manifest
++# encrypt-after-sign step). No SUIT_MANIFEST_BUFSIZE impact: the payload
++# streams past the manifest buffer; the decryptor keeps its own small
++# static header buffer (192 B x25519, 1216/1696 B ml-kem).
++SUIT_FIRMWARE_ENCRYPT ?= 1
++ifeq (1,$(SUIT_FIRMWARE_ENCRYPT))
++  USEMODULE += suit_firmware_encrypt
++endif
++
+ # enable VFS transport (only works on boards with external storage)
+ USEMODULE += suit_transport_vfs
+ USEMODULE += vfs_default
+diff --git a/examples/advanced/suit_update/NATIVE_SETUP.md b/examples/advanced/suit_update/NATIVE_SETUP.md
+index 7d768c188b..a1dbd1a168 100644
+--- a/examples/advanced/suit_update/NATIVE_SETUP.md
++++ b/examples/advanced/suit_update/NATIVE_SETUP.md
+@@ -12,6 +12,13 @@ For the classic unencrypted flow, build with `SUIT_MANIFEST_ENCRYPT=0` and
+ skip step 6b — or don't: an encryption-capable firmware also accepts
+ plaintext manifests (pass-through).
+ 
++Firmware **payload encryption is likewise on by default**
++(`SUIT_FIRMWARE_ENCRYPT=1`, see `FIRMWARE_ENCRYPTION_CHANGES.md`): the
++firmware can additionally decrypt ChaCha20-Poly1305-encrypted payloads
++*while they stream in* (step 6c), using the same device key. It also still
++accepts plaintext payloads (pass-through), so steps 6/6b alone keep
++working unchanged. Opt out with `SUIT_FIRMWARE_ENCRYPT=0`.
++
+ ## 1. Prerequisites
+ 
+ ```bash
+@@ -107,6 +114,31 @@ overhead, verified on native64 (see `MLKEM_ENCRYPTION_CHANGES.md`). The
+ firmware accepts exactly the scheme it was built for and logs a clear
+ `recipient alg X != built-in Y` for the other one.
+ 
++## 6c. Encrypted firmware payload (optional; needs SUIT_FIRMWARE_ENCRYPT=1, the default)
++
++To also encrypt the **payload** (not just the manifest), encrypt it for
++the same device key and generate the manifest with `--enc-suffix .enc`,
++which keeps digest/size computed over the *plaintext* while the URI
++points at the `.enc`:
++
++```bash
++python3 examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py \
++  --no-headers --key keys/device_x25519.pem \
++  -o coaproot/payload.bin.enc coaproot/payload.bin
++
++dist/tools/suit/gen_manifest.py --urlroot coap://[2001:db8::1]/ --seqnr 2 \
++  --uuid-class native64 --enc-suffix .enc -o suit.tmp \
++  coaproot/payload.bin:0:ram:0
++```
++
++then `create`, `sign`, and (6b) encrypt the manifest as above. The device
++fetches `payload.bin.enc` (a 74-byte detached COSE_Encrypt header followed
++by ciphertext and a 16-byte tag, +90 bytes total) and decrypts it
++chunk-by-chunk straight into storage; the manifest's image digest is then
++verified over the decrypted plaintext as usual. Mind the RAM storage
++region limit (2048 B per region on native) — that limit applies to the
++*plaintext* size.
++
+ ## 7. Trigger the update from the RIOT shell
+ 
+ ```
+@@ -129,6 +161,18 @@ A plaintext manifest on an encryption-capable firmware instead logs
+ normally; a tampered/wrongly-encrypted container is rejected before
+ parsing with `suit_worker: manifest decryption failed. res=-213`.
+ 
++With an encrypted payload (step 6c) the fetch additionally logs:
++
++```
++suit: decrypting payload (header 74 bytes)
++suit: payload decrypted (N bytes)
++Finalizing payload store
++```
++
++A plaintext payload logs `suit: payload not encrypted, passing through`;
++a tampered encrypted payload fails with `suit: payload authentication
++failed` *before* the store is finalized, and the update aborts.
++
+ Tip for quick tests without networking: the vfs transport works too —
+ copy the manifest to `examples/advanced/suit_update/native/` and
+ `suit fetch file:///nvm0/<file>` (that host directory is the `/nvm0`
+@@ -155,3 +199,10 @@ device key from the image entirely (~17 KB smaller on native64) —
+ behavior is byte-identical to the pre-encryption workflow: publish and
+ fetch `suit_manifest.signed`, skip step 6b. Full details:
+ `MANIFEST_ENCRYPTION_CHANGES.md`.
++
++`SUIT_FIRMWARE_ENCRYPT=0` analogously drops only the payload decryptor
++(~2 KB text / ~450 B RAM on native64; manifest encryption stays
++available): plaintext payloads work as always, and an encrypted payload
++is then rejected by the normal size/digest checks (`Image beyond size`).
++Note that `SUIT_FIRMWARE_ENCRYPT=1` implies the `suit_manifest_encrypt`
++module (shared crypto + device key), even with `SUIT_MANIFEST_ENCRYPT=0`.
+diff --git a/examples/advanced/suit_update/SAMR21_EXAMPLES.md b/examples/advanced/suit_update/SAMR21_EXAMPLES.md
+index 2858002bd1..15122809e9 100644
+--- a/examples/advanced/suit_update/SAMR21_EXAMPLES.md
++++ b/examples/advanced/suit_update/SAMR21_EXAMPLES.md
+@@ -8,10 +8,16 @@ signing algorithm baked into the firmware and used to sign updates:
+ - **Example C — ML-DSA-44** (post-quantum, FIPS 204, category 2)
+ - **Example D — ML-DSA-87** (post-quantum, FIPS 204, category 5)
+ 
+-plus one orthogonal add-on that layers on top of any of them:
++plus two orthogonal add-ons that layer on top of any of them:
+ 
+ - **Example E — Encrypted manifests** (X25519 + ChaCha20-Poly1305
+-  confidentiality; **unverified draft**, see its own status note)
++  confidentiality; verified on hardware on top of A)
++- **Example F — Encrypted firmware payloads** (streaming
++  ChaCha20-Poly1305; **unverified draft**, see its banner)
++
++and a **Variant cookbook** (before the final Gotchas section) with the
++exact flag sets for every supported combination — plain/classical/PQC ×
++manifest-encryption on/off × payload-encryption on/off.
+ 
+ Run each command as its own line in the WSL shell, from the repo root
+ (`~/masterthesis/RIOT` or wherever this checkout lives). All four examples
+@@ -43,6 +49,20 @@ to reproduce the exact pre-encryption images. **Example E itself is
+ verified on real hardware on top of A** (2026-07-19, full encrypted OTA +
+ reboot; see its banner and E.9 for what remains open).
+ 
++**Since firmware-payload encryption landed (also default-on, see Example
++F)**: `suit/publish` now *encrypts the slot binaries* and points the
++manifest URIs at `.enc` files whenever `SUIT_FIRMWARE_ENCRYPT=1` (the
++default) — so a bare A.7 publish already produces an encrypted-payload
++update. A default-built firmware handles both encrypted and plaintext
++payloads; add `SUIT_FIRMWARE_ENCRYPT=0` to the **publish** command to get
++the classic plaintext publish, and to the **build** command to drop the
++decryptor from the image entirely. The one combination that fails is
++publishing encrypted payloads for a firmware built with
++`SUIT_FIRMWARE_ENCRYPT=0` — see the Variant cookbook's matching rule.
++Exception: ML-DSA-65 (Example B) **must** be built with
++`SUIT_FIRMWARE_ENCRYPT=0` — the decryptor's +392 B RAM no longer fits
++(overflow 308 B, measured).
++
+ ---
+ 
+ ## Part 0 — One-time host setup
+@@ -165,7 +185,15 @@ SUIT_KEY_DIR=~/masterthesis/RIOT/examples/advanced/suit_update/ed25519-keys \
+ ```
+ 
+ Builds a new firmware image, signs the manifest with the Ed25519 key, and
+-copies both into `coaproot/`.
++copies both into `coaproot/`. **Default behavior since firmware-payload
++encryption landed**: the slot binaries are published as
++ChaCha20-Poly1305-encrypted `.enc` files (encrypted for the device's
++X25519 key) and the manifest URIs point at them — the flashed default
++firmware decrypts them transparently (Example F). For the classic
++plaintext publish, append `SUIT_FIRMWARE_ENCRYPT=0` to the command above;
++**that opt-out is mandatory if the flashed firmware was itself built with
++`SUIT_FIRMWARE_ENCRYPT=0`** (it cannot decrypt payloads — the fetch would
++abort with `Image beyond size`).
+ 
+ ## A.8 — Notify the device to fetch and apply it
+ 
+@@ -613,8 +641,318 @@ stack.
+ 
+ ---
+ 
++# Example F — Encrypted firmware payloads (streaming ChaCha20-Poly1305)
++
++> **⚠️ UNVERIFIED DRAFT — not yet run on real hardware.** Everything below
++> is extrapolated from the native64-verified flow (CoAP + VFS transports,
++> tamper rejection, pass-through — see `FIRMWARE_ENCRYPTION_CHANGES.md`)
++> and *link-level* samr21 measurements. Run the F.9 checklist, then
++> remove this banner and record the observed numbers.
++
++Payload encryption is orthogonal to (and composes with) Examples A–E: the
++firmware image itself travels as `<slotN>.riot.bin.enc` — a 74-byte
++detached COSE_Encrypt header followed by ciphertext and a Poly1305 tag —
++and the device decrypts it chunk-by-chunk while flashing the inactive
++slot. It is **on by default** (`SUIT_FIRMWARE_ENCRYPT=1`), so A/B/C
++flashes are already payload-decryption-capable, and it shares the device
++key with manifest encryption. Plaintext payloads still pass through, so
++the A.7/A.8 publish flow keeps working unchanged.
++
++**Measured RAM feasibility** (link-level, corrected 2026-07-20 — an
++earlier version of this table understated the ML-KEM rows by not
++accounting for wolfCrypt's runtime heap/stack use; see the note after the
++table and `FIRMWARE_ENCRYPTION_CHANGES.md`'s gotchas for the full story):
++
++| Base | With firmware+manifest encryption |
++|---|---|
++| A (Ed25519) + X25519 | ✅ 21,552 B RAM (**11.2 KB spare**); the decryptor itself costs +392 B RAM / +1,140 B text |
++| C (ML-DSA-44) + X25519 | ✅ 31,280 B RAM (1,488 B spare) |
++| B (ML-DSA-65) + X25519 | ❌ overflow 308 B — **build B with `SUIT_FIRMWARE_ENCRYPT=0`** |
++| A (Ed25519) + ML-KEM-768 | ✅ 30,736 B RAM (**2,032 B spare**) |
++| A (Ed25519) + ML-KEM-1024 | ✅ 32,720 B RAM (**48 B spare — essentially zero margin**) |
++| C + ML-KEM-768 (**full PQ**) | ❌ **overflows 3,556 B — does not fit, not a tuning problem** |
++| D (ML-DSA-87) | ❌ (already fails plain) |
++
++**Correction (2026-07-20)**: the ML-KEM rows above were re-measured after
++discovering wolfCrypt's ML-KEM code unconditionally heap-allocates
++multi-KB scratch buffers at runtime — invisible to `arm-none-eabi-size`,
++so the *original* "measured" numbers (Ed25519+768: 5.0 KB spare,
++full-PQ: 968 B spare) were wrong. The fix
++(`WOLFSSL_NO_MALLOC` in `pkg/wolfssl/include/user_settings.h` + a
++correctly-sized 9,216 B worker stack, both landed 2026-07-20) turned an
++untested "successful" link into an honest result: **the full-PQ combo
++does not fit**, full stop — post-quantum signature *and* post-quantum
++encryption together exceed samr21's 32 KB RAM by ~3.5 KB even with every
++available memory-reduction knob. Classical signature + PQ encryption (row
++above, A + ML-KEM-768) does fit and is the combo to use for a
++post-quantum-encryption demo on this board.
++
++## F.0 — Prerequisite
++
++A working base example (A recommended) flashed from a default build
++(both encryption flags on). Keep the A.4-style exports set.
++
++## F.7 — Publish (automated: encrypts payloads + adjusts manifest URIs)
++
++`suit/publish` handles everything when `SUIT_FIRMWARE_ENCRYPT=1` (the
++default): it encrypts both slot binaries for the device key (`%.enc`
++rule), generates the manifest with digest/size over the *plaintext* but
++URIs pointing at the `.enc` files, and publishes only the `.enc`
++payloads:
++
++```sh
++SUIT_COAP_SERVER=[2001:db8::1] APP_VER=$(date +%s) \
++  BOARD=samr21-xpro make -C examples/advanced/suit_update suit/publish
++```
++
++Then encrypt the manifest as in E.7 (same path/name rules —
++`riot.suit.enc`, 61/64 URL chars).
++
++## F.8 — Notify
++
++Identical to E.8. Expected new lines in the board terminal, between the
++policy check and the progress bar / digest verification:
++
++```
++suit: decrypting payload (header 74 bytes)
++Fetching firmware |█████████████████████████| 100%
++suit: payload decrypted (N bytes)
++```
++
++A plaintext payload instead logs `suit: payload not encrypted, passing
++through`.
++
++## F.9 — Bring-up checklist (run on hardware, then drop the banner)
++
++> First hardware attempt (2026-07-20, plain manifest + encrypted payload):
++> streaming decrypt itself worked first try — `decrypting payload (header
++> 74 bytes)` → `payload decrypted (104404 bytes)` (AEAD tag verified) —
++> but the digest check failed (`Erasing bad payload`, `res=-7`). Root
++> cause was an **upstream riotboot bug**, not the crypto: RAW-mode
++> `riotboot_flashwrite_putbytes()` flashed blocks at the input-segment
++> position, correct only for buffer-aligned chunks; the decryptor's
++> header-stripped chunk stream (38 B first chunk) broke that hidden
++> assumption. Fixed in `sys/riotboot/flashwrite.c` — **reflash the board
++> with a rebuilt image** (bootloader itself is unaffected) and retest.
++
++> Second hardware attempt (2026-07-20, ML-DSA-44 + ML-KEM-768 full-PQ
++> combo, manifest fetch this time): after fixing the manifest-buffer
++> undersizing (real `suit/publish` URIs produce a larger manifest than
++> the constant assumed) and a mute-shell heap exhaustion (pktbuf
++> rebalance), hit `suit: manifest CEK derivation failed: -125`
++> (wolfCrypt `MEMORY_E`) — **not a bug in this feature**, a pre-existing
++> wolfCrypt ML-KEM defect: unconditional multi-KB heap allocation inside
++> `wc_MlKemKey_MakeKeyWithRandom`/`Decapsulate`, invisible to every prior
++> link-time RAM measurement (see `FIRMWARE_ENCRYPTION_CHANGES.md`
++> gotchas for the full trace). Fixed
++> (`WOLFSSL_NO_MALLOC` + corrected 9,216 B worker stack) and
++> **re-measured for real: the full-PQ combo does not fit samr21's 32 KB
++> RAM at all (~3.5 KB short)** — item 5 below is retired, replaced with
++> the Ed25519+ML-KEM-768 combo which does fit.
++
++1. ⬜ Encrypted-payload OTA end-to-end (decrypt → flash → digest verify →
++   reboot into the other slot), on top of A. *(Attempted 2026-07-20:
++   failed pre-fix at the digest step as described above; retest with the
++   flashwrite fix.)*
++2. ⬜ Worker-stack watermark during the fetch (`ps` in the shell): the
++   payload path nests the CEK derivation inside the CoAP callback. For
++   ML-KEM builds this is no longer a guess — `-fstack-usage` measured the
++   ML-KEM decapsulation chain at ~8.5-9 KB peak, and the worker stack is
++   now forced to 9,216 B accordingly; confirm the real watermark stays
++   under that on hardware rather than trusting the estimate blindly.
++3. ⬜ Tampered `.enc` payload rejected (`suit: payload authentication
++   failed` before `Finalizing payload store`; a failed fetch doesn't
++   consume the seqnr).
++4. ⬜ Mixed mode: a plain A.7/A.8 publish (`SUIT_FIRMWARE_ENCRYPT=0
++   make suit/publish`) accepted by the same firmware.
++5. ⬜ PQ-encryption variant (A + `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768`,
++   **classical Ed25519 signature**, not the retired full-PQ combo):
++   2,032 B RAM spare at link, correctly stack-sized — repeat 1–3 there.
++   (The full-PQ combo, C + ml-kem-768, is confirmed **infeasible** on
++   this board — do not attempt it, it will not link.)
++
++---
++
++# Variant cookbook — every supported combination
++
++Three independent axes, all selected by Make variables (defaults in
++**bold**):
++
++| Axis | Variable | Choices |
++|---|---|---|
++| Signature | `SUIT_KEY_ALGO` | **`ed25519`** (classical), `ml-dsa-44`/`-65`/`-87` (PQC) |
++| Manifest encryption | `SUIT_MANIFEST_ENCRYPT` (+`_ALGO`) | **`1`** / `0`; algo **`x25519`** (classical), `ml-kem-768`/`-1024` (PQC) |
++| Payload encryption | `SUIT_FIRMWARE_ENCRYPT` | **`1`** / `0` (uses the same `_ALGO`/device key as the manifest axis) |
++
++**The matching rule (read this first).** The *build/flash* flags decide
++what the device **can** accept; the *publish* flags decide what gets
++**produced**. Plaintext is always accepted (pass-through on both axes),
++so the only forbidden direction is publishing *more* encryption than the
++flashed image supports:
++
++- encrypted payload → `SUIT_FIRMWARE_ENCRYPT=0` firmware: fetch aborts
++  (`Image beyond size`);
++- encrypted manifest → `SUIT_MANIFEST_ENCRYPT=0` firmware: rejected at
++  parse (`suit_parse() failed`);
++- wrong `_ALGO` (e.g. ML-KEM container for an X25519 build): rejected
++  with `recipient alg X != built-in Y`.
++
++Simplest habit: **use the same flag set for A.5 (flash) and A.7
++(publish).** Manifest encryption additionally needs the manual E.7
++encrypt-after-publish step — it is *not* automated in `suit/publish`;
++payload encryption *is* automated.
++
++Every recipe below = Examples A–D's steps with the stated variables
++appended to **both** the flash (x.5) and publish (x.7) commands, plus
++E.7/E.8 when the manifest is to be encrypted. RAM numbers: measured
++link-level, out of 32,768 B (`FIRMWARE_ENCRYPTION_CHANGES.md` /
++`MLKEM_ENCRYPTION_CHANGES.md`).
++
++## 1. Plain classical SUIT (no confidentiality — the pre-encryption flow)
++
++```sh
++SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0
++```
++Follow Example A verbatim with these two appended to A.5 and A.7; notify
++per A.8. Byte-identical to the original workflow (no device key, no
++decryptor, most flash/RAM headroom). ✅ hardware-verified (Example A).
++
++## 2. Classical, fully encrypted (Ed25519 + X25519, manifest **and** payload — the defaults)
++
++No extra variables — this *is* the default build and publish:
++A.5 + A.7 bare, then E.7 (encrypt the manifest) + E.8 (notify
++`riot.suit.enc`). Expected new log lines: `manifest decrypted (N bytes)`,
++`decrypting payload (header 74 bytes)`, `payload decrypted (N bytes)`.
++✅ 21,552 B RAM (11.2 KB spare); manifest part hardware-verified
++(Example E), payload part pending F.9.
++
++## 3. Classical, manifest encryption only
++
++```sh
++SUIT_FIRMWARE_ENCRYPT=0
++```
++A.5/A.7 with the flag, then E.7 + E.8. Payloads stay plaintext (the flag
++on A.7 keeps `suit/publish` from encrypting them). ✅ 21,160 B RAM —
++exactly the hardware-verified Example E configuration.
++
++## 4. Classical, payload encryption only (plain manifests)
++
++```sh
++SUIT_MANIFEST_ENCRYPT=0
++```
++A.5/A.7 with the flag, notify per A.8 (no E.7 — the manifest stays
++plaintext, named `riot.suit.latest.bin`). Note the image still links the
++manifest-decrypt crypto (the payload decryptor depends on it for the
++shared device key/primitives) — publish manifests plaintext anyway, since
++the `SUIT_MANIFEST_BUFSIZE` headroom for encrypted manifests is only
++reserved when `SUIT_MANIFEST_ENCRYPT=1`. This is the combination first
++exercised on hardware 2026-07-20 (found the riotboot alignment bug —
++retest after reflashing with the fix).
++
++## 5. PQC signatures only, no confidentiality
++
++```sh
++SUIT_KEY_ALGO=ml-dsa-44   # or ml-dsa-65 / ml-dsa-87
++SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0
++```
++Follow Example C (or B/D) with the flags appended — C.5/C.7 already set
++`SUIT_KEY_ALGO`; use the matching key dir/name. ✅ hardware-verified for
++ML-DSA-44/-65 (Examples C/B); ML-DSA-87 ❌ doesn't link (Example D).
++
++## 6. Hybrid: PQC signatures + classical encryption
++
++```sh
++SUIT_KEY_ALGO=ml-dsa-44          # ML-DSA-44 build (Example C base)
++# manifest+payload encryption on by default (X25519)
++```
++C.5/C.7 bare (defaults on), then E.7/E.8 with
++`--key $SUIT_KEY_DIR/device_x25519.pem`. ✅ 31,280 B RAM (1,488 B spare).
++**ML-DSA-65 variant**: must add `SUIT_FIRMWARE_ENCRYPT=0` (manifest
++encryption only) — ✅ links at 88 B spare; with the payload decryptor it
++overflows by 308 B. ML-DSA-87: ❌.
++
++## 7. Hybrid: classical signature + PQC encryption
++
++```sh
++SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768   # or ml-kem-1024
++```
++A.5/A.7 with the flag (key dir already holds `device_mlkem768.pem` /
++generated on first build), then E.7 using
++`manifest-encryption-mlkem/encrypt_manifest.py --key
++$SUIT_KEY_DIR/device_mlkem768.pem`; payload encryption picks up the same
++KEM key automatically. **This is the recommended samr21 post-quantum
++*encryption* demo** — the full-PQ combo below does not fit. ✅ ML-KEM-768
++manifest+payload: 30,736 B RAM (**2,032 B spare**, corrected 2026-07-20 —
++see the note below); manifest-only: 3,440 B spare. ML-KEM-1024
++manifest+payload: 32,720 B RAM (**48 B spare — essentially zero margin,
++not recommended for anything beyond a one-off experiment**). Needs
++OpenSSL 3.5+ and the local wolfssl checkout (auto-selected). The app
++Makefile forces a 9,216 B worker stack for any `ml-kem-%` build
++(mandatory — wolfCrypt's ML-KEM decapsulation measures ~8.5-9 KB peak
++stack via `-fstack-usage`; see recipe 8's correction note).
++
++## 8. Full PQC (ML-DSA-44 signatures + ML-KEM-768 encryption) — ❌ CONFIRMED INFEASIBLE
++
++```sh
++SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768
++```
++**Do not attempt this combo on samr21-xpro — it will not link.**
++Post-quantum signature *and* post-quantum encryption together need more
++RAM than this board has, by ~3.3-3.6 KB even manifest-only, with every
++available wolfCrypt memory-reduction flag enabled. This was **not**
++apparent from earlier link-time measurements, which is why this recipe
++used to say "✅ 968 B spare" — corrected below.
++
++**Correction (2026-07-20, real hardware bring-up)**: the original "968 B
++spare" claim was link-time-only and never accounted for wolfCrypt's
++ML-KEM code unconditionally heap-allocating multi-KB scratch buffers at
++*runtime* (up to 6,144 B in one call) — invisible to
++`arm-none-eabi-size`/`nm`. On real hardware this produced `suit: manifest
++CEK derivation failed: -125` (wolfCrypt `MEMORY_E`). The fix
++(`WOLFSSL_NO_MALLOC` in `pkg/wolfssl/include/user_settings.h`, moving the
++buffers to a `-fstack-usage`-measured ~8.5-9 KB stack instead) is
++strictly correct, but re-measuring with the *correct* stack size shows
++the combo overflows RAM by 3,364 B (manifest-only) / 3,556 B (+ payload
++encryption) — it never actually fit; the previous number was simply
++measuring the wrong thing. Full trace in
++`FIRMWARE_ENCRYPTION_CHANGES.md`'s gotchas. **Verified E2E only on
++native64** (effectively unlimited stack there), never on hardware, and
++never will fit on this board's 32 KB RAM without a wolfSSL-side patch to
++reduce ML-KEM's decapsulation memory footprint further (out of scope
++here). Use recipe 7 (Ed25519 + ML-KEM-768) for a working samr21
++PQ-encryption demo instead. ML-DSA-44 + ML-KEM-**1024** is strictly
++worse — also infeasible.
++
++## Quick reference
++
++| # | Signature | Manifest enc | Payload enc | Flags on flash+publish | samr21 |
++|---|---|---|---|---|---|
++| 1 | Ed25519 | — | — | `SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0` | ✅ verified |
++| 2 | Ed25519 | X25519 | X25519 | *(defaults)* | ✅ links, F.9 pending |
++| 3 | Ed25519 | X25519 | — | `SUIT_FIRMWARE_ENCRYPT=0` | ✅ verified (Ex. E) |
++| 4 | Ed25519 | — | X25519 | `SUIT_MANIFEST_ENCRYPT=0` | 🔄 retest post-fix |
++| 5 | ML-DSA-44/65 | — | — | `SUIT_KEY_ALGO=… + both =0` | ✅ verified (Ex. B/C) |
++| 6 | ML-DSA-44 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-44` | ✅ links, 1.5 KB spare |
++| 6b | ML-DSA-65 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_FIRMWARE_ENCRYPT=0` | ✅ links, 88 B spare |
++| 7 | Ed25519 | ML-KEM-768 | ML-KEM-768 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | ✅ links, **2.0 KB spare** (corrected) |
++| 8 | ML-DSA-44 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | ❌ **does not link (corrected) — see recipe 8** |
++| — | ML-DSA-87 | any | any | — | ❌ never links |
++
++Row 7/8 numbers corrected 2026-07-20 after discovering wolfCrypt's ML-KEM
++runtime heap use was invisible to the earlier link-time-only
++measurement; see recipe 8's correction note and
++`FIRMWARE_ENCRYPTION_CHANGES.md`'s gotchas for the full story.
++
+ ## Gotchas that apply to all examples
+ 
++- **Keep build and publish flags identical.** Since both encryption
++  features default to on, a publish from a terminal *without* the opt-out
++  flags produces encrypted artifacts — fine for default-built firmware,
++  but a board flashed with `SUIT_FIRMWARE_ENCRYPT=0` /
++  `SUIT_MANIFEST_ENCRYPT=0` will reject them (`Image beyond size` /
++  `suit_parse() failed`). Plaintext publishes are accepted by *every*
++  build (pass-through), so when in doubt, opt out at publish time. Full
++  rules: the Variant cookbook's matching rule.
+ - **`res=-5` / `seq_nr <= running image` on re-notify is expected** — the
+   manifest sequence number must strictly increase. Publish with a fresh
+   `APP_VER=$(date +%s)` to update again.
+diff --git a/examples/advanced/suit_update/firmware-encryption/README.md b/examples/advanced/suit_update/firmware-encryption/README.md
+new file mode 100644
+index 0000000000..23857a1818
+--- /dev/null
++++ b/examples/advanced/suit_update/firmware-encryption/README.md
+@@ -0,0 +1,138 @@
++# SUIT firmware encryption example — streaming ChaCha20-Poly1305
++
++Standalone host-only proof of the crypto pipeline that encrypts SUIT
++**firmware payloads** (as opposed to manifests — see
++`../manifest-encryption/` for that sibling, whose key exchange, KDF, and
++device key this reuses unchanged): the host encrypts the image for a
++specific device via ephemeral-static X25519 ECDH, and the device decrypts
++it **while it streams in**, because a firmware image (~120 KB on real
++boards) never fits in a parse buffer the way a manifest does.
++
++`encrypt_firmware.py` generates/loads the device's static X25519 keypair,
++encrypts a payload (a built-in ~13 KB patterned test image, or any file)
++into a **detached-ciphertext** COSE_Encrypt container, and self-tests by
++decrypting it in Python. `wolfcrypt-sample.c` then consumes the output in
++64-byte chunks — emulating the device's blockwise CoAP fetch — proving the
++streaming logic the RIOT integration uses: header reassembly across chunk
++boundaries, incremental AEAD, and the trailing-tag lag buffer. It also
++verifies that tampered ciphertext, tag, and header are all rejected.
++
++## Wire format
++
++Same COSE_Encrypt (CBOR tag 96) and recipient as the manifest container,
++but with **detached ciphertext** (RFC 9052 §5.1): the `ciphertext` slot is
++`null` and the actual `ciphertext || tag` follows the self-delimiting CBOR
++header as a raw byte stream:
++
++```
++96([
++  << {1: 24} >>,           / protected: alg = ChaCha20/Poly1305        /
++  {5: h'...'},             / unprotected: 12-byte nonce (IV)           /
++  null,                    / ciphertext DETACHED — streams after this  /
++  [[                       / one recipient                             /
++    << {1: -25} >>,        / protected: alg = ECDH-ES + HKDF-256       /
++    {-1: {1: 1, -1: 4,     / unprotected: ephemeral COSE_Key           /
++          -2: h'...'}},    /   (kty OKP, crv X25519, x = 32-byte pub)  /
++    h''                    / no encrypted key: direct key agreement    /
++  ]]
++])
++|| ciphertext (same length as the plaintext image)
++|| Poly1305 tag (16 B)
++```
++
++Key derivation and AAD are byte-identical to the manifest feature
++(`CEK = HKDF-SHA256(X25519 shared, info=COSE_KDF_Context)`,
++`AAD = ["Encrypt", body_protected, h'']` — see
++`../manifest-encryption/README.md` for the full rules). An X25519 header
++is 74 bytes; total container overhead is 90 bytes (74 + 16 tag).
++
++## The streaming part (what's new vs. the manifest example)
++
++- **Header reassembly**: transport chunks are 64 bytes (CoAP blockwise);
++  the 74-byte header straddles a chunk boundary. Chunks accumulate in a
++  192-byte buffer, re-parsed after each until the CBOR parses completely
++  (truncation fails cleanly with nanocbor's ERR_END — retry; a full
++  buffer that still doesn't parse is an error).
++- **Exact header length**: nanocbor's `nanocbor_skip()` does *not*
++  descend into tagged items, and `nanocbor_leave_container()` derives the
++  parent position from the child cursor — so the parser must walk and
++  **drain every nested container** to learn where the header ends and the
++  ciphertext starts (see `parse_cose_header()`; this was the hard-won
++  lesson of this example).
++- **Incremental AEAD**: `wc_ChaCha20Poly1305_Init` →
++  `_UpdateAad` → per-chunk `_UpdateData` → `_Final` + `_CheckTag`
++  (present in RIOT's pinned wolfssl pkg — no wolfssl upgrade needed).
++- **Trailing-tag lag**: the Poly1305 tag is the *last* 16 bytes of the
++  stream, but its position is only known at end-of-stream — so the
++  decryptor always withholds the 16 most recent bytes from decryption.
++  Only after `_CheckTag` passes does the final chunk count as delivered;
++  a tampered stream therefore never finalizes.
++
++## Set-up
++
++Uses the same wolfSSL checkout as the manifest-encryption example (already
++configured with `--enable-curve25519` for that work — see its README for
++the one-time configure/make). Python needs `cryptography` and `cbor2`.
++
++## Run the example
++
++```bash
++python3 encrypt_firmware.py                # built-in ~13 KB test payload
++python3 encrypt_firmware.py payload.bin    # or any file
++```
++
++This writes `firmware.enc` plus the C headers (`encrypted.h`,
++`device_seckey.h`, `plaintext.h`) the sample embeds. Then:
++
++```bash
++gcc wolfcrypt-sample.c \
++    ../../../../build/pkg/nanocbor/src/decoder.c \
++    ../../../../build/pkg/nanocbor/src/encoder.c \
++    -o firmware-encryption-example \
++    -I../../../../build/pkg/nanocbor/include \
++    -I../../../../dist/tools/suit/ml-dsa-example/wolfssl \
++    -L../../../../dist/tools/suit/ml-dsa-example/wolfssl/src/.libs \
++    -Wl,-rpath,"$(realpath ../../../../dist/tools/suit/ml-dsa-example/wolfssl/src/.libs)" \
++    -lwolfssl
++./firmware-encryption-example
++```
++
++Expected output:
++
++```
++Python-encrypted, wolfCrypt-stream-decrypted: MATCH (12828 bytes)
++Tampered ciphertext byte rejected: YES
++Tampered trailing tag byte rejected: YES
++Tampered header nonce byte rejected: YES
++```
++
++## Use as the real host-side tool
++
++Exactly like its manifest sibling, `encrypt_firmware.py` doubles as the
++host-side encryption step of the SUIT workflow (`SUIT_FIRMWARE_ENCRYPT=1`):
++
++```bash
++python3 encrypt_firmware.py --no-headers \
++    --key ~/.local/share/RIOT/keys/device_x25519.pem \
++    -o coaproot/payload.bin.enc coaproot/payload.bin
++```
++
++`--no-headers` suppresses the standalone-example C headers. The manifest
++is generated against the **plaintext** file (digest/size) with its URI
++pointing at the `.enc` (`gen_manifest.py --enc-suffix .enc`) — the signed
++image digest over the decrypted payload remains the security anchor;
++decrypt-then-verify, same composition as the manifest feature.
++
++## Security caveats (prototype!)
++
++- Same as the manifest example: the device private key is embedded in a
++  C header / the firmware image (prototype-grade key storage); ECDH-ES
++  gives no sender authentication — authenticity comes from the signed
++  manifest's image digest, which is verified over the *stored plaintext*
++  after the fetch completes.
++- On real boards the decrypted image is written to the inactive slot as
++  it streams in; the slot is only validated/booted after both the AEAD
++  tag and the signed digest check pass. A payload that fails either is
++  erased/never installed, but its prefix has transiently existed in the
++  inactive slot — same trust model as the plaintext SUIT flow.
++- Per-device encryption: one `.enc` artifact per device key.
+diff --git a/examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py b/examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py
+new file mode 100644
+index 0000000000..a1bf306335
+--- /dev/null
++++ b/examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py
+@@ -0,0 +1,277 @@
++#!/usr/bin/env python3
++"""Encrypt a firmware image for a device via X25519 + ChaCha20-Poly1305.
++
++Host side of the firmware-encryption example, and the real host-side tool
++for the SUIT firmware-encryption workflow (SUIT_FIRMWARE_ENCRYPT=1). Same
++crypto pipeline and device key as ../manifest-encryption/encrypt_manifest.py
++(ephemeral-static X25519, COSE "ECDH-ES + HKDF-256" alg -25, HKDF-SHA256,
++ChaCha20-Poly1305 COSE alg 24) — only the container differs: the ciphertext
++is DETACHED (RFC 9052 section 5.1), because the device decrypts the image
++while it streams in and a firmware image never fits in a CBOR parse buffer.
++
++Wire format of the output file (CBOR diagnostic notation):
++
++    96([                       # COSE_Encrypt header, self-delimiting CBOR
++      << {1: 24} >>,           # protected: alg = ChaCha20/Poly1305
++      {5: h'<nonce, 12B>'},    # unprotected: IV
++      null,                    # ciphertext detached -> streams after this
++      [[                       # recipients: exactly one
++        << {1: -25} >>,        # protected: alg = ECDH-ES + HKDF-256
++        {-1: {1: 1, -1: 4,     # unprotected: ephemeral COSE_Key (OKP, X25519)
++              -2: h'<ephemeral public key, 32B>'}},
++        h''                    # no encrypted key: direct key agreement
++      ]]
++    ])
++    || ciphertext (same length as the plaintext image)
++    || Poly1305 tag (16 B)
++
++CEK = HKDF-SHA256(ikm=X25519(eph_priv, device_pub), salt=empty,
++                  info=COSE_KDF_Context, len=32)  per RFC 9053 section 5.2,
++AAD = Enc_structure ["Encrypt", body_protected, h''].
++Byte-identical `info`/AAD rules as the manifest container — the device
++reuses the received protected-header bytes verbatim.
++"""
++
++import argparse
++import io
++import os
++import sys
++
++import cbor2
++from cryptography.hazmat.primitives import serialization
++from cryptography.hazmat.primitives.asymmetric.x25519 import (
++    X25519PrivateKey,
++    X25519PublicKey,
++)
++try:
++    # post-quantum recipient (cryptography >= 48); the recipient scheme is
++    # auto-detected from the device key's type, matching
++    # ../manifest-encryption-mlkem/encrypt_manifest.py and the compile-time
++    # dispatch in sys/suit/encrypt/decrypt.c
++    from cryptography.hazmat.primitives.asymmetric import mlkem
++except ImportError:
++    mlkem = None
++from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
++from cryptography.hazmat.primitives.hashes import SHA256
++from cryptography.hazmat.primitives.kdf.hkdf import HKDF
++
++COSE_ALG_CHACHA20_POLY1305 = 24
++COSE_ALG_ECDH_ES_HKDF_256 = -25
++COSE_ALG_MLKEM768 = -70768      # private-use IDs, no IANA COSE alg yet
++COSE_ALG_MLKEM1024 = -70769
++COSE_TAG_ENCRYPT = 96
++
++DEVICE_KEY_FILE = "device_x25519.pem"
++
++
++def parse_arguments():
++    parser = argparse.ArgumentParser(
++        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
++    parser.add_argument('input', nargs='?', default=None,
++                        help='Firmware image to encrypt (e.g. payload.bin or '
++                             'a slot binary); a built-in 13KB patterned test '
++                             'payload is used if omitted')
++    parser.add_argument('--output', '-o', default="firmware.enc",
++                        help='Encrypted output file (COSE header || '
++                             'ciphertext || tag)')
++    parser.add_argument('--key', '-k', default=DEVICE_KEY_FILE,
++                        help='Device X25519 private key PEM (e.g. the '
++                             'SUIT_ENC_SEC key the firmware was built with, '
++                             'default: ~/.local/share/RIOT/keys/'
++                             'device_x25519.pem); generated if missing')
++    parser.add_argument('--no-headers', action='store_true',
++                        help='Skip writing the standalone-example C headers '
++                             '(encrypted.h/plaintext.h/device_*.h) — use '
++                             'this when encrypting real payloads for the '
++                             'SUIT workflow')
++    return parser.parse_args()
++
++
++def write_file(path, data):
++    mode = "wb" if isinstance(data, (bytes, bytearray)) else "w"
++    with open(os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600),
++              mode) as f:
++        f.write(data)
++
++
++def format_byte_array(name, data):
++    lines = [f"const byte {name}[{len(data)}] = {{"]
++    for i in range(0, len(data), 12):
++        chunk = data[i:i + 12]
++        lines.append("    " + ", ".join(f"0x{b:02x}" for b in chunk) + ",")
++    lines.append("};\n")
++    return "\n".join(lines)
++
++
++def device_keypair(key_file, write_headers):
++    """Load the device's static X25519 key, generating it on first run.
++
++    The C-sample headers are (re)written on every run when present-key
++    material is used, so a stale header can never poison the C build
++    (lesson from the ML-KEM standalone example).
++    """
++    if os.path.exists(key_file):
++        with open(key_file, "rb") as f:
++            private_key = serialization.load_pem_private_key(f.read(), None)
++        print(f"Loaded device key from {key_file}")
++    else:
++        private_key = X25519PrivateKey.generate()
++        write_file(key_file, private_key.private_bytes(
++            serialization.Encoding.PEM,
++            serialization.PrivateFormat.PKCS8,
++            serialization.NoEncryption()))
++        print(f"Generated device key: {key_file}")
++
++    if write_headers:
++        # SECURITY: embedding the private key in a header is prototype-only.
++        write_file("device_seckey.h", format_byte_array(
++            "device_seckey", private_key.private_bytes_raw()))
++        write_file("device_pubkey.h", format_byte_array(
++            "device_pubkey", private_key.public_key().public_bytes_raw()))
++    return private_key
++
++
++def kdf_context(recipient_protected):
++    """COSE_KDF_Context (RFC 9053 section 5.2) used as the HKDF info."""
++    return cbor2.dumps([
++        COSE_ALG_CHACHA20_POLY1305,        # AlgorithmID (of the content key)
++        [None, None, None],                # PartyUInfo
++        [None, None, None],                # PartyVInfo
++        [256, recipient_protected],        # SuppPubInfo: keyDataLength (bits),
++    ])                                     #   recipient protected header
++
++
++def enc_structure(body_protected):
++    """Enc_structure AAD (RFC 9052 section 5.3)."""
++    return cbor2.dumps(["Encrypt", body_protected, b''])
++
++
++def derive_cek(shared_secret, recipient_protected):
++    return HKDF(algorithm=SHA256(), length=32, salt=None,
++                info=kdf_context(recipient_protected)).derive(shared_secret)
++
++
++def make_recipient(device_public_key):
++    """Recipient structure + shared secret, by device-key type.
++
++    X25519: ephemeral-static ECDH, ephemeral key in the recipient's
++    unprotected header. ML-KEM: encapsulation, KEM ciphertext in the
++    recipient's ciphertext field (see manifest-encryption-mlkem/README.md).
++    """
++    if isinstance(device_public_key, X25519PublicKey):
++        ephemeral = X25519PrivateKey.generate()
++        shared_secret = ephemeral.exchange(device_public_key)
++        recipient_protected = cbor2.dumps({1: COSE_ALG_ECDH_ES_HKDF_256})
++        ephemeral_key = {1: 1, -1: 4,      # kty: OKP, crv: X25519
++                         -2: ephemeral.public_key().public_bytes_raw()}
++        return shared_secret, \
++            [recipient_protected, {-1: ephemeral_key}, b'']
++
++    if mlkem is not None and isinstance(device_public_key,
++                                        mlkem.MLKEM768PublicKey):
++        alg_id = COSE_ALG_MLKEM768
++    elif mlkem is not None and isinstance(device_public_key,
++                                          mlkem.MLKEM1024PublicKey):
++        alg_id = COSE_ALG_MLKEM1024
++    else:
++        raise SystemExit(f"unsupported device key type: "
++                         f"{type(device_public_key).__name__}")
++    shared_secret, kem_ct = device_public_key.encapsulate()
++    recipient_protected = cbor2.dumps({1: alg_id})
++    return shared_secret, [recipient_protected, {}, kem_ct]
++
++
++def encrypt(device_public_key, plaintext):
++    """Return header || ciphertext || tag (detached-ciphertext container)."""
++    shared_secret, recipient = make_recipient(device_public_key)
++    recipient_protected = recipient[0]
++
++    body_protected = cbor2.dumps({1: COSE_ALG_CHACHA20_POLY1305})
++
++    cek = derive_cek(shared_secret, recipient_protected)
++    nonce = os.urandom(12)
++    # cryptography returns ciphertext||tag — exactly the detached stream
++    ct_and_tag = ChaCha20Poly1305(cek).encrypt(
++        nonce, plaintext, enc_structure(body_protected))
++
++    header = cbor2.dumps(cbor2.CBORTag(COSE_TAG_ENCRYPT, [
++        body_protected,
++        {5: nonce},
++        None,                              # detached ciphertext
++        [recipient],
++    ]))
++    return header, ct_and_tag
++
++
++def decrypt(device_private_key, blob):
++    """Python-side reference decrypt, used as the self-test."""
++    fp = io.BytesIO(blob)
++    tagged = cbor2.CBORDecoder(fp).decode()
++    header_len = fp.tell()
++    assert tagged.tag == COSE_TAG_ENCRYPT, f"unexpected tag {tagged.tag}"
++    body_protected, unprotected, detached, recipients = tagged.value
++    assert detached is None, "ciphertext must be detached (null)"
++    assert cbor2.loads(body_protected) == {1: COSE_ALG_CHACHA20_POLY1305}
++
++    recipient_protected, recipient_unprotected, recipient_ct = recipients[0]
++    recipient_alg = cbor2.loads(recipient_protected)[1]
++    if recipient_alg == COSE_ALG_ECDH_ES_HKDF_256:
++        ephemeral_pub = recipient_unprotected[-1][-2]
++        shared_secret = device_private_key.exchange(
++            X25519PublicKey.from_public_bytes(ephemeral_pub))
++    elif recipient_alg in (COSE_ALG_MLKEM768, COSE_ALG_MLKEM1024):
++        shared_secret = device_private_key.decapsulate(recipient_ct)
++    else:
++        raise SystemExit(f"unknown recipient alg {recipient_alg}")
++    cek = derive_cek(shared_secret, recipient_protected)
++    ct_and_tag = blob[header_len:]
++    return ChaCha20Poly1305(cek).decrypt(
++        unprotected[5], ct_and_tag, enc_structure(body_protected))
++
++
++def test_payload():
++    """~13KB patterned pseudo-firmware: forces the streaming C sample
++    through many 64-byte chunks and a header/ciphertext chunk straddle."""
++    block = bytes(range(256))
++    return b"RIOT-FW-ENC-TEST" + block * 50 + b"END-OF-IMAGE"
++
++
++def main(args):
++    print("SUIT firmware encryption (X25519 + HKDF-SHA256 + "
++          "ChaCha20-Poly1305, detached ciphertext) - START")
++
++    write_headers = not args.no_headers
++    device_key = device_keypair(args.key, write_headers)
++
++    if args.input:
++        with open(args.input, "rb") as f:
++            plaintext = f.read()
++        print(f"Encrypting {args.input} ({len(plaintext)} bytes)")
++    else:
++        plaintext = test_payload()
++        print(f"Encrypting built-in test payload ({len(plaintext)} bytes)")
++
++    header, ct_and_tag = encrypt(device_key.public_key(), plaintext)
++    blob = header + ct_and_tag
++    write_file(args.output, blob)
++    print(f"Wrote {args.output}: {len(blob)} bytes "
++          f"(header {len(header)} + ciphertext {len(plaintext)} + tag 16)")
++
++    if write_headers:
++        # Headers for the self-contained C sample
++        write_file("encrypted.h", format_byte_array("enc_stream", blob))
++        write_file("plaintext.h", format_byte_array("expected_plaintext",
++                                                    plaintext))
++
++    recovered = decrypt(device_key, blob)
++    if recovered != plaintext:
++        print("Self-test decrypt: MISMATCH")
++        return 1
++    print("Self-test decrypt: OK")
++
++    print("SUIT firmware encryption - END")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main(parse_arguments()))
+diff --git a/examples/advanced/suit_update/firmware-encryption/wolfcrypt-sample.c b/examples/advanced/suit_update/firmware-encryption/wolfcrypt-sample.c
+new file mode 100644
+index 0000000000..1fe5e1393a
+--- /dev/null
++++ b/examples/advanced/suit_update/firmware-encryption/wolfcrypt-sample.c
+@@ -0,0 +1,535 @@
++/*
++ * Device side of the firmware-encryption example: STREAMING decryption of a
++ * detached-ciphertext COSE_Encrypt container produced by encrypt_firmware.py
++ * (Python `cryptography`), using wolfCrypt's incremental ChaCha20-Poly1305
++ * API. This mirrors, chunk for chunk, what the RIOT-side SUIT payload
++ * decryptor does during a blockwise CoAP fetch:
++ *
++ *   1. buffer incoming 64-byte chunks until the self-delimiting CBOR header
++ *      parses (the header typically straddles a chunk boundary),
++ *   2. X25519 ECDH -> HKDF-SHA256 -> CEK, UpdateAad(Enc_structure),
++ *   3. decrypt each chunk in place with wc_ChaCha20Poly1305_UpdateData,
++ *      withholding the last 16 bytes seen so far (the trailing Poly1305 tag
++ *      position is only known at end-of-stream) via a lag buffer,
++ *   4. at end-of-stream: wc_ChaCha20Poly1305_Final + _CheckTag against the
++ *      withheld 16 bytes — only then is the plaintext accepted.
++ *
++ * The container, the device's static X25519 private key, and the expected
++ * plaintext are embedded via headers generated by encrypt_firmware.py
++ * (encrypted.h, device_seckey.h, plaintext.h), so the binary is
++ * self-contained. CBOR parsing uses nanocbor, same as the on-device parser.
++ *
++ * Build (against the pre-built wolfSSL checkout of the ml-dsa example,
++ * already configured with --enable-curve25519, and RIOT's nanocbor):
++ *   python3 encrypt_firmware.py
++ *   gcc wolfcrypt-sample.c ../../../../build/pkg/nanocbor/src/decoder.c \
++ *       ../../../../build/pkg/nanocbor/src/encoder.c \
++ *       -o firmware-encryption-example \
++ *       -I../../../../build/pkg/nanocbor/include \
++ *       -I../../../../dist/tools/suit/ml-dsa-example/wolfssl \
++ *       -L../../../../dist/tools/suit/ml-dsa-example/wolfssl/src/.libs \
++ *       -Wl,-rpath,"$(realpath ../../../../dist/tools/suit/ml-dsa-example/wolfssl/src/.libs)" \
++ *       -lwolfssl
++ *
++ * Run:
++ *   ./firmware-encryption-example
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifndef WOLFSSL_USER_SETTINGS
++    #include <wolfssl/options.h>
++#endif
++
++#include <wolfssl/wolfcrypt/settings.h>
++#include <wolfssl/wolfcrypt/curve25519.h>
++#include <wolfssl/wolfcrypt/hmac.h>
++#include <wolfssl/wolfcrypt/chacha20_poly1305.h>
++#include <wolfssl/wolfcrypt/error-crypt.h>
++
++#include <nanocbor/nanocbor.h>
++
++#include "encrypted.h"      /* const byte enc_stream[] (header||ct||tag) */
++#include "device_seckey.h"  /* const byte device_seckey[32] */
++#include "plaintext.h"      /* const byte expected_plaintext[] */
++
++#define COSE_ALG_CHACHA20_POLY1305  24
++#define COSE_ALG_ECDH_ES_HKDF_256  (-25)
++#define COSE_TAG_ENCRYPT            96
++#define COSE_HDR_IV                 5
++#define COSE_KEY_PARAM_EPHEMERAL   (-1)
++#define COSE_KEY_PARAM_X          (-2)
++
++#define NONCE_LEN  CHACHA20_POLY1305_AEAD_IV_SIZE      /* 12 */
++#define TAG_LEN    CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE /* 16 */
++
++/* COSE header buffer: an X25519 detached-ct header is ~110 B; sized like
++ * the +128 B manifest-buffer bump, leaving CBOR-framing headroom */
++#define HDR_BUF_LEN     192
++/* transport chunk size to emulate (CoAP blockwise on the device) */
++#define CHUNK_LEN       64
++
++/* Parsed fields of the detached-ciphertext COSE_Encrypt header
++ * (pointers into the header buffer) */
++typedef struct {
++    const uint8_t *body_protected;      /* serialized {1: 24} */
++    size_t body_protected_len;
++    const uint8_t *recipient_protected; /* serialized {1: -25} */
++    size_t recipient_protected_len;
++    const uint8_t *nonce;               /* 12 bytes */
++    const uint8_t *ephemeral_pub;       /* 32 bytes */
++} cose_hdr_t;
++
++/* Streaming decrypt state — the same shape as the device-side
++ * suit_payload_decrypt state */
++typedef struct {
++    uint8_t hdr[HDR_BUF_LEN];
++    size_t hdr_fill;
++    int hdr_done;
++    cose_hdr_t msg;
++    ChaChaPoly_Aead aead;
++    uint8_t pending[TAG_LEN];   /* tag lag: last 16 bytes seen so far */
++    size_t pending_fill;
++    uint8_t *out;               /* plaintext sink (device: storage write) */
++    size_t out_fill;
++    size_t out_max;
++} stream_state_t;
++
++static int map_get_bstr(nanocbor_value_t *map, int32_t wanted,
++                        const uint8_t **buf, size_t *len)
++{
++    while (!nanocbor_at_end(map)) {
++        int32_t key;
++        if (nanocbor_get_int32(map, &key) < 0) {
++            return -1;
++        }
++        if (key == wanted) {
++            return nanocbor_get_bstr(map, buf, len) < 0 ? -1 : 0;
++        }
++        if (nanocbor_skip(map) < 0) {
++            return -1;
++        }
++    }
++    return -1;
++}
++
++/* Drain a container iterator to its end so nanocbor_leave_container()
++ * advances the parent cursor correctly (leave uses the child's cursor) */
++static int drain(nanocbor_value_t *container)
++{
++    while (!nanocbor_at_end(container)) {
++        if (nanocbor_skip(container) < 0) {
++            return -1;
++        }
++    }
++    return 0;
++}
++
++/* Parse the detached-ciphertext COSE_Encrypt header. Returns the header
++ * length in bytes on success (the ciphertext stream starts right after),
++ * or -1 if buf does not (yet) contain a complete, valid header — the
++ * caller retries with more data until its buffer is exhausted.
++ *
++ * Every container is walked to its end and left properly: nanocbor_skip
++ * does not descend into tagged items, so the only way to learn the exact
++ * header length (= top-level cursor after leaving the outer array) is a
++ * full unwind. This also validates completeness: any truncation fails a
++ * get or skip call with ERR_END. */
++static ssize_t parse_cose_header(const uint8_t *buf, size_t len,
++                                 cose_hdr_t *msg)
++{
++    nanocbor_value_t it, body, map, recipients, recipient, key_map;
++    uint32_t tag;
++    size_t eph_len, nonce_len;
++
++    nanocbor_decoder_init(&it, buf, len);
++    if (nanocbor_get_tag(&it, &tag) < 0 || tag != COSE_TAG_ENCRYPT) {
++        return -1;
++    }
++    if (nanocbor_enter_array(&it, &body) < 0 ||
++        nanocbor_get_bstr(&body, &msg->body_protected,
++                          &msg->body_protected_len) < 0) {
++        return -1;
++    }
++    if (nanocbor_enter_map(&body, &map) < 0 ||
++        map_get_bstr(&map, COSE_HDR_IV, &msg->nonce, &nonce_len) < 0 ||
++        nonce_len != NONCE_LEN || drain(&map) < 0) {
++        return -1;
++    }
++    nanocbor_leave_container(&body, &map);
++    /* detached ciphertext: the slot must be null */
++    if (nanocbor_get_null(&body) < 0) {
++        return -1;
++    }
++
++    /* single recipient: [protected, {-1: COSE_Key}, h''] */
++    if (nanocbor_enter_array(&body, &recipients) < 0 ||
++        nanocbor_enter_array(&recipients, &recipient) < 0 ||
++        nanocbor_get_bstr(&recipient, &msg->recipient_protected,
++                          &msg->recipient_protected_len) < 0) {
++        return -1;
++    }
++    if (nanocbor_enter_map(&recipient, &map) < 0) {
++        return -1;
++    }
++    msg->ephemeral_pub = NULL;
++    while (!nanocbor_at_end(&map)) {
++        int32_t key;
++        if (nanocbor_get_int32(&map, &key) < 0) {
++            return -1;
++        }
++        if (key == COSE_KEY_PARAM_EPHEMERAL) {
++            if (nanocbor_enter_map(&map, &key_map) < 0 ||
++                map_get_bstr(&key_map, COSE_KEY_PARAM_X,
++                             &msg->ephemeral_pub, &eph_len) < 0 ||
++                eph_len != CURVE25519_KEYSIZE || drain(&key_map) < 0) {
++                return -1;
++            }
++            nanocbor_leave_container(&map, &key_map);
++        }
++        else if (nanocbor_skip(&map) < 0) {
++            return -1;
++        }
++    }
++    if (msg->ephemeral_pub == NULL) {
++        return -1;
++    }
++    nanocbor_leave_container(&recipient, &map);
++
++    /* trailing encrypted-key slot (h'') + unwind all containers */
++    if (drain(&recipient) < 0) {
++        return -1;
++    }
++    nanocbor_leave_container(&recipients, &recipient);
++    if (drain(&recipients) < 0) {
++        return -1;
++    }
++    nanocbor_leave_container(&body, &recipients);
++    if (!nanocbor_at_end(&body)) {
++        return -1;
++    }
++    nanocbor_leave_container(&it, &body);
++    return (ssize_t)(it.cur - buf);
++}
++
++/* HKDF info: COSE_KDF_Context (RFC 9053 5.2) — byte-identical to
++ * encrypt_firmware.py: [24, [null,null,null], [null,null,null],
++ *                       [256, <recipient protected header bstr>]] */
++static int build_kdf_context(const cose_hdr_t *msg,
++                             uint8_t *out, size_t out_len, size_t *written)
++{
++    nanocbor_encoder_t enc;
++    nanocbor_encoder_init(&enc, out, out_len);
++    nanocbor_fmt_array(&enc, 4);
++    nanocbor_fmt_int(&enc, COSE_ALG_CHACHA20_POLY1305);
++    for (int party = 0; party < 2; party++) {
++        nanocbor_fmt_array(&enc, 3);
++        for (int i = 0; i < 3; i++) {
++            nanocbor_fmt_null(&enc);
++        }
++    }
++    nanocbor_fmt_array(&enc, 2);
++    nanocbor_fmt_uint(&enc, 256);
++    nanocbor_put_bstr(&enc, msg->recipient_protected,
++                      msg->recipient_protected_len);
++    *written = nanocbor_encoded_len(&enc);
++    return *written <= out_len ? 0 : -1;
++}
++
++/* AAD: Enc_structure (RFC 9052 5.3) ["Encrypt", <body protected bstr>, h''],
++ * reusing the received protected-header bytes verbatim */
++static int build_enc_structure(const cose_hdr_t *msg,
++                               uint8_t *out, size_t out_len, size_t *written)
++{
++    nanocbor_encoder_t enc;
++    nanocbor_encoder_init(&enc, out, out_len);
++    nanocbor_fmt_array(&enc, 3);
++    nanocbor_put_tstr(&enc, "Encrypt");
++    nanocbor_put_bstr(&enc, msg->body_protected, msg->body_protected_len);
++    nanocbor_put_bstr(&enc, (const uint8_t *)"", 0);
++    *written = nanocbor_encoded_len(&enc);
++    return *written <= out_len ? 0 : -1;
++}
++
++static int derive_cek(const cose_hdr_t *msg, byte *cek)
++{
++    int ret;
++    curve25519_key device_key, ephemeral_key;
++    WC_RNG rng;
++    byte shared[CURVE25519_KEYSIZE];
++    word32 shared_len = sizeof(shared);
++    uint8_t info[64];
++    size_t info_len;
++
++    if (build_kdf_context(msg, info, sizeof(info), &info_len) < 0) {
++        return -1;
++    }
++
++    ret = wc_InitRng(&rng);
++    if (ret != 0) {
++        return ret;
++    }
++    ret = wc_curve25519_init(&device_key);
++    if (ret != 0) {
++        wc_FreeRng(&rng);
++        return ret;
++    }
++    ret = wc_curve25519_init(&ephemeral_key);
++    if (ret != 0) {
++        wc_curve25519_free(&device_key);
++        wc_FreeRng(&rng);
++        return ret;
++    }
++
++    /* cryptography.io uses RFC 7748 little-endian raw keys -> _ex variants
++     * with EC25519_LITTLE_ENDIAN; blinding builds need the RNG hookup */
++    ret = wc_curve25519_import_private_ex(device_seckey,
++                                          sizeof(device_seckey),
++                                          &device_key,
++                                          EC25519_LITTLE_ENDIAN);
++#ifdef WOLFSSL_CURVE25519_BLINDING
++    if (ret == 0) {
++        ret = wc_curve25519_set_rng(&device_key, &rng);
++    }
++#endif
++    if (ret == 0) {
++        ret = wc_curve25519_import_public_ex(msg->ephemeral_pub,
++                                             CURVE25519_KEYSIZE,
++                                             &ephemeral_key,
++                                             EC25519_LITTLE_ENDIAN);
++    }
++    if (ret == 0) {
++        ret = wc_curve25519_shared_secret_ex(&device_key, &ephemeral_key,
++                                             shared, &shared_len,
++                                             EC25519_LITTLE_ENDIAN);
++    }
++    if (ret == 0) {
++        ret = wc_HKDF(WC_SHA256, shared, shared_len, NULL, 0,
++                      info, (word32)info_len,
++                      cek, CHACHA20_POLY1305_AEAD_KEYSIZE);
++    }
++
++    memset(shared, 0, sizeof(shared));
++    wc_curve25519_free(&ephemeral_key);
++    wc_curve25519_free(&device_key);
++    wc_FreeRng(&rng);
++    return ret;
++}
++
++/* Feed ciphertext bytes into the AEAD, always withholding the most recent
++ * TAG_LEN bytes (candidate trailing tag) in s->pending */
++static int feed_ciphertext(stream_state_t *s, const uint8_t *data, size_t len)
++{
++    size_t total = s->pending_fill + len;
++
++    if (total > TAG_LEN) {
++        size_t n = total - TAG_LEN;             /* safely decryptable */
++        size_t from_pending = n < s->pending_fill ? n : s->pending_fill;
++
++        if (from_pending > 0) {
++            uint8_t tmp[TAG_LEN];
++            if (s->out_fill + from_pending > s->out_max) {
++                return -1;
++            }
++            if (wc_ChaCha20Poly1305_UpdateData(&s->aead, s->pending, tmp,
++                                               (word32)from_pending) != 0) {
++                return -1;
++            }
++            memcpy(s->out + s->out_fill, tmp, from_pending);
++            s->out_fill += from_pending;
++            memmove(s->pending, s->pending + from_pending,
++                    s->pending_fill - from_pending);
++            s->pending_fill -= from_pending;
++        }
++
++        size_t from_data = n - from_pending;
++        if (from_data > 0) {
++            if (s->out_fill + from_data > s->out_max) {
++                return -1;
++            }
++            if (wc_ChaCha20Poly1305_UpdateData(&s->aead, data,
++                                               s->out + s->out_fill,
++                                               (word32)from_data) != 0) {
++                return -1;
++            }
++            s->out_fill += from_data;
++            data += from_data;
++            len -= from_data;
++        }
++    }
++
++    /* stash the (potential) tag tail */
++    memcpy(s->pending + s->pending_fill, data, len);
++    s->pending_fill += len;
++    return 0;
++}
++
++/* Process one transport chunk; more=0 signals end-of-stream (tag check) */
++static int stream_chunk(stream_state_t *s, const uint8_t *buf, size_t len,
++                        int more)
++{
++    if (!s->hdr_done && len > 0) {
++        size_t space = sizeof(s->hdr) - s->hdr_fill;
++        size_t take = len < space ? len : space;
++        if (take == 0) {
++            printf("header exceeds %d-byte buffer\n", HDR_BUF_LEN);
++            return -1;
++        }
++        memcpy(s->hdr + s->hdr_fill, buf, take);
++        s->hdr_fill += take;
++        buf += take;
++        len -= take;
++
++        ssize_t hdr_len = parse_cose_header(s->hdr, s->hdr_fill, &s->msg);
++        if (hdr_len < 0) {
++            if (len > 0) {          /* buffer full yet still unparseable */
++                printf("COSE header parsing failed\n");
++                return -1;
++            }
++            return 0;               /* incomplete: wait for the next chunk */
++        }
++
++        byte cek[CHACHA20_POLY1305_AEAD_KEYSIZE];
++        uint8_t aad[64];
++        size_t aad_len;
++        int ret = derive_cek(&s->msg, cek);
++        if (ret != 0) {
++            printf("CEK derivation failed: %d\n", ret);
++            return -1;
++        }
++        if (build_enc_structure(&s->msg, aad, sizeof(aad), &aad_len) < 0 ||
++            wc_ChaCha20Poly1305_Init(&s->aead, cek, s->msg.nonce,
++                                     CHACHA20_POLY1305_AEAD_DECRYPT) != 0 ||
++            wc_ChaCha20Poly1305_UpdateAad(&s->aead, aad,
++                                          (word32)aad_len) != 0) {
++            memset(cek, 0, sizeof(cek));
++            return -1;
++        }
++        memset(cek, 0, sizeof(cek));
++        s->hdr_done = 1;
++
++        /* bytes past the header already sitting in the header buffer are
++         * the first ciphertext bytes */
++        if (s->hdr_fill > (size_t)hdr_len) {
++            if (feed_ciphertext(s, s->hdr + hdr_len,
++                                s->hdr_fill - hdr_len) < 0) {
++                return -1;
++            }
++        }
++    }
++
++    if (len > 0) {
++        if (!s->hdr_done) {
++            return 0;   /* unreachable: header consumes whole early chunks */
++        }
++        if (feed_ciphertext(s, buf, len) < 0) {
++            return -1;
++        }
++    }
++
++    if (!more) {
++        byte computed[TAG_LEN];
++        if (!s->hdr_done || s->pending_fill != TAG_LEN) {
++            printf("stream truncated (no trailing tag)\n");
++            return -1;
++        }
++        if (wc_ChaCha20Poly1305_Final(&s->aead, computed) != 0) {
++            return -1;
++        }
++        if (wc_ChaCha20Poly1305_CheckTag(computed, s->pending) != 0) {
++            return -1;  /* MAC_CMP_FAILED_E */
++        }
++    }
++    return 0;
++}
++
++/* Run the full stream through the state machine in CHUNK_LEN pieces,
++ * emulating the device's blockwise fetch (last chunk carries more=0) */
++static int run_stream(const uint8_t *stream, size_t stream_len,
++                      uint8_t *out, size_t out_max, size_t *out_len)
++{
++    stream_state_t *s = calloc(1, sizeof(*s));
++    if (s == NULL) {
++        return -1;
++    }
++    s->out = out;
++    s->out_max = out_max;
++
++    int ret = 0;
++    for (size_t off = 0; off < stream_len && ret == 0; off += CHUNK_LEN) {
++        size_t len = stream_len - off < CHUNK_LEN ? stream_len - off
++                                                  : CHUNK_LEN;
++        int more = (off + len < stream_len);
++        ret = stream_chunk(s, stream + off, len, more);
++    }
++    *out_len = s->out_fill;
++    free(s);
++    return ret;
++}
++
++int main(void)
++{
++    size_t out_len = 0;
++    uint8_t *out = malloc(sizeof(expected_plaintext) + CHUNK_LEN);
++
++    printf("Streaming COSE_Encrypt firmware decryption with wolfCrypt "
++           "- START\n");
++    printf("Stream: %u bytes, fed in %u-byte chunks\n",
++           (unsigned)sizeof(enc_stream), (unsigned)CHUNK_LEN);
++
++    if (out == NULL) {
++        printf("malloc failed\n");
++        return 1;
++    }
++
++    /* Positive case */
++    if (run_stream(enc_stream, sizeof(enc_stream), out,
++                   sizeof(expected_plaintext) + CHUNK_LEN, &out_len) != 0) {
++        printf("streaming decrypt FAILED\n");
++        return 1;
++    }
++    if (out_len == sizeof(expected_plaintext) &&
++        memcmp(out, expected_plaintext, out_len) == 0) {
++        printf("Python-encrypted, wolfCrypt-stream-decrypted: MATCH "
++               "(%u bytes)\n", (unsigned)out_len);
++    }
++    else {
++        printf("Python-encrypted, wolfCrypt-stream-decrypted: MISMATCH\n");
++        return 1;
++    }
++
++    /* Negative tests: each tamper must be rejected at the final tag check */
++    struct {
++        const char *what;
++        size_t index;               /* byte to flip within the stream */
++    } cases[] = {
++        { "ciphertext byte", sizeof(enc_stream) / 2 },
++        { "trailing tag byte", sizeof(enc_stream) - 1 },
++        { "header nonce byte", 12 },
++    };
++    uint8_t *tampered = malloc(sizeof(enc_stream));
++    if (tampered == NULL) {
++        printf("malloc failed\n");
++        return 1;
++    }
++    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
++        memcpy(tampered, enc_stream, sizeof(enc_stream));
++        tampered[cases[i].index] ^= 0x01;
++        int ret = run_stream(tampered, sizeof(enc_stream), out,
++                             sizeof(expected_plaintext) + CHUNK_LEN,
++                             &out_len);
++        printf("Tampered %s rejected: %s\n", cases[i].what,
++               ret != 0 ? "YES" : "NO - BUG");
++        if (ret == 0) {
++            return 1;
++        }
++    }
++    free(tampered);
++    free(out);
++
++    printf("Streaming COSE_Encrypt firmware decryption with wolfCrypt "
++           "- END\n");
++    return 0;
++}
+diff --git a/examples/advanced/suit_update/fw-encryption-feasibility-raw.txt b/examples/advanced/suit_update/fw-encryption-feasibility-raw.txt
+new file mode 100644
+index 0000000000..1627ac6cdd
+--- /dev/null
++++ b/examples/advanced/suit_update/fw-encryption-feasibility-raw.txt
+@@ -0,0 +1,34 @@
++# samr21-xpro firmware-encryption feasibility - raw link results (2026-07-19/20)
++# BOARD=samr21-xpro make clean all per combo; size of suit_update.elf; RAM budget 32768 B
++
++=== ed-x25519-fw1 ===
++exit=0
++ 103904	    260	  21292	 125456	  1ea10	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== ed-x25519-fw0 ===
++exit=0
++ 102764	    260	  20900	 123924	  1e414	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== d44-x25519-fw1 ===
++exit=0
++ 117508	    260	  31020	 148788	  24534	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== d65-x25519-fw1 ===
++exit=2
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 308 bytes
++
++=== ed-kem768-fw1 ===
++=== ed-kem768-fw1 ===
++exit=0
++ 115488	    260	  27412	 143160	  22f38	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
++
++=== d44-kem768-fw1 ===
++exit=2
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
++/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 252 bytes
++
++DONE
++=== d44-kem768-fw1 (after pq_scratch union rework) ===
++exit=0
++ 121636	    260	  31540	 153436	  2575c	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+diff --git a/makefiles/pseudomodules.inc.mk b/makefiles/pseudomodules.inc.mk
+index 708468d741..5ddec54fca 100644
+--- a/makefiles/pseudomodules.inc.mk
++++ b/makefiles/pseudomodules.inc.mk
+@@ -490,6 +490,10 @@ PSEUDOMODULES += stm32mp1_eng_mode
+ PSEUDOMODULES += suit_transport_%
+ PSEUDOMODULES += suit_storage_%
+ PSEUDOMODULES += suit_algo_%
++# streaming firmware-payload decryption: source compiled as part of the
++# suit_manifest_encrypt module dir (sys/suit/encrypt/payload_decrypt.c),
++# gated by this pseudomodule's MODULE_ define
++PSEUDOMODULES += suit_firmware_encrypt
+ PSEUDOMODULES += sys_bus_%
+ PSEUDOMODULES += tiny_strerror_as_strerror
+ PSEUDOMODULES += tiny_strerror_minimal
+diff --git a/makefiles/suit.base.inc.mk b/makefiles/suit.base.inc.mk
+index 3087598b88..9137011d48 100644
+--- a/makefiles/suit.base.inc.mk
++++ b/makefiles/suit.base.inc.mk
+@@ -121,6 +121,14 @@ suit/genkey: $(SUIT_SEC)
+ # the firmware via a generated header (prototype-grade key storage: the key
+ # ends up in the image).
+ export SUIT_MANIFEST_ENCRYPT ?= 1
++# Firmware-payload confidentiality (suit_firmware_encrypt module, selected
++# by the app Makefile like the modules above): reuses the same device key
++# (SUIT_ENC_SEC) and recipient scheme, so no extra key handling here. The
++# host-side payload encryption is a manual step, like manifest encryption:
++# examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py
++# --no-headers --key $(SUIT_ENC_SEC) -o <payload>.enc <payload>, with the
++# manifest generated via gen_manifest.py --enc-suffix .enc.
++export SUIT_FIRMWARE_ENCRYPT ?= 1
+ # Key-establishment scheme: x25519 (default) or ml-kem-768 / ml-kem-1024
+ # (post-quantum; needs OpenSSL 3.5+ for key generation and the local
+ # wolfssl checkout on-device — see MLKEM_ENCRYPTION_PLAN.md)
+diff --git a/makefiles/suit.inc.mk b/makefiles/suit.inc.mk
+index 313b13d8d7..c312a3fc23 100644
+--- a/makefiles/suit.inc.mk
++++ b/makefiles/suit.inc.mk
+@@ -40,12 +40,32 @@ SUIT_MANIFEST_PAYLOADS ?= $(SLOT0_RIOT_BIN) $(SLOT1_RIOT_BIN)
+ SUIT_MANIFEST_SLOTFILES ?= $(SLOT0_RIOT_BIN):$(SLOT0_OFFSET) \
+                            $(SLOT1_RIOT_BIN):$(SLOT1_OFFSET)
+ 
++# Firmware-payload encryption (FIRMWARE_ENCRYPTION_PLAN.md): when the
++# firmware was built with the (default-on) suit_firmware_encrypt module,
++# publish ChaCha20-Poly1305-encrypted payloads instead of the plaintext
++# slot binaries. The manifest's image-digest/size stay computed over the
++# plaintext (the device stores decrypted bytes); only the URI gets the
++# .enc suffix. SUIT_ENC_SEC (the device key) comes from suit.base.inc.mk.
++ifeq (1,$(SUIT_FIRMWARE_ENCRYPT))
++  ifneq (,$(SUIT_ENC_SEC))
++    SUIT_FW_ENCRYPT_TOOL ?= $(RIOTBASE)/examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py
++    SUIT_ENC_SUFFIX_ARGS = --enc-suffix .enc
++    SUIT_PUBLISH_PAYLOADS = $(addsuffix .enc,$(SUIT_MANIFEST_PAYLOADS))
++
++%.enc: % $(SUIT_ENC_SEC)
++	$(Q)python3 $(SUIT_FW_ENCRYPT_TOOL) --no-headers \
++	  --key $(SUIT_ENC_SEC) -o $@ $<
++  endif
++endif
++SUIT_PUBLISH_PAYLOADS ?= $(SUIT_MANIFEST_PAYLOADS)
++
+ $(SUIT_MANIFEST): $(SUIT_MANIFEST_PAYLOADS) $(BINDIR_SUIT)
+ 	$(Q)$(RIOTBASE)/dist/tools/suit/gen_manifest.py \
+ 	  --urlroot $(SUIT_COAP_ROOT) \
+ 	  --seqnr $(SUIT_SEQNR) \
+ 	  --uuid-vendor $(SUIT_VENDOR) \
+ 	  --uuid-class $(SUIT_CLASS) \
++	  $(SUIT_ENC_SUFFIX_ARGS) \
+ 	  -o $@.tmp \
+ 	  $(SUIT_MANIFEST_SLOTFILES)
+ 
+@@ -79,7 +99,7 @@ SUIT_MANIFESTS := $(SUIT_MANIFEST_SIGNED) \
+ 
+ suit/manifest: $(SUIT_MANIFESTS)
+ 
+-suit/publish: $(SUIT_MANIFESTS) $(SUIT_MANIFEST_PAYLOADS)
++suit/publish: $(SUIT_MANIFESTS) $(SUIT_PUBLISH_PAYLOADS)
+ 	$(Q)mkdir -p $(SUIT_COAP_FSROOT)/$(SUIT_COAP_BASEPATH)
+ 	$(Q)cp $^ $(SUIT_COAP_FSROOT)/$(SUIT_COAP_BASEPATH)
+ 	$(Q)for file in $^; do \
+diff --git a/pkg/wolfssl/include/user_settings.h b/pkg/wolfssl/include/user_settings.h
+index df8c7dcd7d..08b8a7c8d9 100644
+--- a/pkg/wolfssl/include/user_settings.h
++++ b/pkg/wolfssl/include/user_settings.h
+@@ -165,6 +165,31 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
+ 
+ #ifdef MODULE_WOLFCRYPT_MLKEM
+ #define WOLFSSL_HAVE_MLKEM
++/* Without this, wc_mlkem.c unconditionally XMALLOCs its scratch buffers
++ * (up to 6-10KB depending on operation) from the C heap - undetectable by
++ * link-time .data/.bss analysis (arm-none-eabi-size), and far more than
++ * newlib's heap has on a 32KB-RAM board: found the hard way as runtime
++ * MEMORY_E (-125) from suit_cose_derive_cek() on real samr21-xpro
++ * hardware, despite the build linking fine and even "measuring" spare
++ * static RAM. Forces those buffers onto the stack instead (sized down
++ * further by the two SMALL_MEM flags below) - bounded, and covered by
++ * SUIT_WORKER_STACKSIZE, unlike an unbounded/unmeasured heap need.
++ * Confirmed scoped to wc_mlkem.c/wc_mlkem_poly.c only: every other
++ * currently-compiled wolfcrypt file's WOLFSSL_NO_MALLOC branches are
++ * additionally gated by WOLFSSL_SMALL_STACK, which this build never
++ * defines, so they're unaffected either way. */
++#define WOLFSSL_NO_MALLOC
++/* Trade a little more CPU for smaller scratch buffers: MakeKeyWithRandom's
++ * combined matrix+error-vector buffer drops from (k+1)*k*N (6144B @ k=3)
++ * to k*N (1536B); mutually exclusive with WOLFSSL_MLKEM_CACHE_A (not
++ * defined here). */
++#define WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM
++/* Same trade for encapsulate's `y` buffer (used by decapsulate too, via
++ * the FIPS 203 implicit-rejection re-encryption check): (k+3)*k+3)*N
++ * (10752B @ k=3) down to 3*k*N (4608B). Still the single largest stack
++ * consumer in the decrypt path - see SUIT_WORKER_STACKSIZE in the app
++ * Makefile for the resulting worker-stack sizing. */
++#define WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM
+ /* ML-KEM needs the SHA3 hashes and SHAKE XOFs (same note as ML-DSA above) */
+ #define WOLFSSL_SHAKE128
+ #define WOLFSSL_SHAKE256
+diff --git a/sys/include/suit/firmware_encrypt.h b/sys/include/suit/firmware_encrypt.h
+new file mode 100644
+index 0000000000..51567b73d1
+--- /dev/null
++++ b/sys/include/suit/firmware_encrypt.h
+@@ -0,0 +1,81 @@
++/*
++ * Copyright (C) 2026 Miguel Arcilla
++ *
++ * This file is subject to the terms and conditions of the GNU Lesser
++ * General Public License v2.1. See the file LICENSE in the top level
++ * directory for more details.
++ */
++
++/**
++ * @ingroup     sys_suit
++ * @brief       SUIT firmware-payload confidentiality (streaming
++ *              COSE_Encrypt decryption)
++ *
++ * Decrypts firmware payloads wrapped in a detached-ciphertext COSE_Encrypt
++ * container (header || ciphertext || Poly1305 tag — see
++ * examples/advanced/suit_update/firmware-encryption/README.md for the wire
++ * format) while they stream in from the transport: a wrapper callback sits
++ * in front of the storage-write helper in the SUIT fetch directive,
++ * reassembles and parses the container header, derives the
++ * ChaCha20-Poly1305 content key with the same embedded device key and
++ * recipient scheme as manifest encryption (X25519 ECDH-ES or ML-KEM), and
++ * forwards decrypted chunks with plaintext offsets. The trailing tag is
++ * verified before the final chunk is forwarded, so a tampered stream is
++ * never finalized; the signed manifest's image digest over the stored
++ * plaintext remains the authenticity anchor.
++ *
++ * Payloads that do not start with a COSE_Encrypt tag pass through
++ * unchanged (legacy plaintext payloads keep working).
++ *
++ * @{
++ *
++ * @file
++ * @brief       SUIT streaming firmware-payload decryption API
++ *
++ * @author      Miguel Arcilla <miguelkristopharcilla@gmail.com>
++ */
++#ifndef SUIT_FIRMWARE_ENCRYPT_H
++#define SUIT_FIRMWARE_ENCRYPT_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "net/nanocoap.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * @brief   Arm the streaming payload decryptor for one fetch
++ *
++ * Resets the internal state machine and records the storage callback that
++ * receives the decrypted (or passed-through) chunks. Must be called
++ * immediately before starting a transport transfer that uses
++ * @ref suit_payload_decrypt_helper as its blockwise callback. The SUIT
++ * worker is single-threaded, so one static state instance suffices.
++ *
++ * @param[in]   inner   the storage-write callback to forward plaintext to
++ */
++void suit_payload_decrypt_start(coap_blockwise_cb_t inner);
++
++/**
++ * @brief   Transport blockwise callback wrapping a storage helper with
++ *          streaming COSE_Encrypt decryption
++ *
++ * Drop-in replacement for the storage helper in the fetch directive's
++ * transport calls; chunks must arrive in order (both the CoAP blockwise
++ * and VFS transports guarantee this). Decrypts in place inside @p buf.
++ *
++ * @return  0 on success, <0 on parse/crypto/authentication/storage error
++ *          (aborts the transfer)
++ */
++int suit_payload_decrypt_helper(void *arg, size_t offset, uint8_t *buf,
++                                size_t len, int more);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* SUIT_FIRMWARE_ENCRYPT_H */
++/** @} */
+diff --git a/sys/include/suit/pq_scratch.h b/sys/include/suit/pq_scratch.h
+index 9826fa6247..911f5b4b50 100644
+--- a/sys/include/suit/pq_scratch.h
++++ b/sys/include/suit/pq_scratch.h
+@@ -33,10 +33,26 @@
+ #ifndef SUIT_PQ_SCRATCH_H
+ #define SUIT_PQ_SCRATCH_H
+ 
++#include <stdint.h>
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
++/**
++ * @brief   Size of the streaming firmware-payload decryptor's COSE header
++ *          buffer (sys/suit/encrypt/payload_decrypt.c): the ML-KEM
++ *          encapsulation ciphertext dominates in KEM builds; X25519
++ *          headers are 74 B measured
++ */
++#if defined(MODULE_WOLFCRYPT_MLKEM1024)
++#define SUIT_FW_ENC_HDR_LEN     (1696)
++#elif defined(MODULE_WOLFCRYPT_MLKEM)
++#define SUIT_FW_ENC_HDR_LEN     (1216)
++#else
++#define SUIT_FW_ENC_HDR_LEN     (192)
++#endif
++
+ #if defined(MODULE_WOLFCRYPT_MLDSA) && defined(MODULE_WOLFCRYPT_MLKEM)
+ 
+ #define SUIT_PQ_SCRATCH_SHARED 1
+@@ -47,11 +63,24 @@ extern "C" {
+ 
+ /**
+  * @brief   One static allocation shared by the (never concurrent) ML-DSA
+- *          verify and ML-KEM decapsulation states
++ *          verify state and the encryption-side states
++ *
++ * The encryption members may be live at the same time as each other (the
++ * payload header buffer holds the KEM ciphertext *while* it is being
++ * decapsulated), so they are struct siblings — but all of them are dead
++ * whenever the ML-DSA verify state is live (verification finishes before
++ * the fetch directive runs), hence the outer union.
+  */
+ union suit_pq_scratch {
+-    MlDsaKey mldsa;     /**< signature-verify state (libcose backend) */
+-    MlKemKey mlkem;     /**< manifest-decryption state (suit encrypt module) */
++    MlDsaKey mldsa;         /**< signature-verify state (libcose backend) */
++    struct {
++        MlKemKey mlkem;     /**< decapsulation state (manifest + payload
++                                 CEK derivation, suit encrypt module) */
++#ifdef MODULE_SUIT_FIRMWARE_ENCRYPT
++        uint8_t fw_hdr[SUIT_FW_ENC_HDR_LEN];
++                            /**< streaming payload-decrypt header buffer */
++#endif
++    } enc;                  /**< encryption-side states (concurrent) */
+ };
+ 
+ extern union suit_pq_scratch suit_pq_scratch;
+diff --git a/sys/riotboot/flashwrite.c b/sys/riotboot/flashwrite.c
+index 7f55df2e55..cf01708548 100644
+--- a/sys/riotboot/flashwrite.c
++++ b/sys/riotboot/flashwrite.c
+@@ -154,7 +154,18 @@ int riotboot_flashwrite_putbytes(riotboot_flashwrite_t *state,
+                        state->flashpage_buf, RIOTBOOT_FLASHPAGE_BUFFER_SIZE);
+             }
+             else {
+-                flashpage_write((uint8_t *)addr + flashpage_pos,
++                /* flashpage_pos/flashwrite_buffer_pos still hold their
++                 * values from the start of this input segment; the buffer
++                 * being flushed starts at the enclosing
++                 * RIOTBOOT_FLASHPAGE_BUFFER_SIZE boundary, not at the
++                 * segment start. The two only coincide for callers that
++                 * feed buffer-aligned chunks (as the plain CoAP blockwise
++                 * path happens to); unaligned producers (e.g. the SUIT
++                 * streaming payload decryptor, whose chunks are shifted
++                 * by the stripped COSE header) otherwise get their blocks
++                 * flashed at shifted, unaligned addresses. */
++                flashpage_write((uint8_t *)addr +
++                                (flashpage_pos - flashwrite_buffer_pos),
+                                 state->flashpage_buf,
+                                 RIOTBOOT_FLASHPAGE_BUFFER_SIZE);
+             }
+diff --git a/sys/suit/Makefile.dep b/sys/suit/Makefile.dep
+index 2acd9d51b7..c2c9cea33e 100644
+--- a/sys/suit/Makefile.dep
++++ b/sys/suit/Makefile.dep
+@@ -14,6 +14,13 @@ ifeq (,$(filter libcose_crypt_%,$(USEMODULE)))
+   USEMODULE += libcose_crypt_c25519
+ endif
+ 
++# firmware-payload decryption reuses the manifest-decryption crypto
++# (shared COSE_Encrypt parsing / CEK derivation in sys/suit/encrypt and
++# the same embedded device key), so it implies that module
++ifneq (,$(filter suit_firmware_encrypt,$(USEMODULE)))
++  USEMODULE += suit_manifest_encrypt
++endif
++
+ # manifest decryption: X25519 via the c25519 pkg (its fprime_* symbols
+ # collide with wolfCrypt's fe_low_mem.c, so wolfCrypt's own CURVE25519_SMALL
+ # implementation can't coexist with the libcose c25519 signature backend);
+diff --git a/sys/suit/encrypt/decrypt.c b/sys/suit/encrypt/decrypt.c
+index e2c82247fc..3964213749 100644
+--- a/sys/suit/encrypt/decrypt.c
++++ b/sys/suit/encrypt/decrypt.c
+@@ -12,7 +12,10 @@
+  *
+  * @file
+  * @brief       SUIT manifest decryption (COSE_Encrypt, X25519 + HKDF-SHA256 +
+- *              ChaCha20-Poly1305 via wolfCrypt)
++ *              ChaCha20-Poly1305 via wolfCrypt), plus the container-parsing /
++ *              CEK-derivation primitives shared with the streaming
++ *              firmware-payload decryption (payload_decrypt.c, see
++ *              encrypt_internal.h)
+  *
+  * Device-side counterpart of dist tooling's encrypt step; the wire format
+  * and the byte-exact KDF-context/AAD rules are documented in
+@@ -36,6 +39,8 @@
+ #include <wolfssl/wolfcrypt/chacha20_poly1305.h>
+ #include <wolfssl/wolfcrypt/error-crypt.h>
+ 
++#include "encrypt_internal.h"
++
+ #ifdef MODULE_WOLFCRYPT_MLKEM
+ /* Post-quantum variant (SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768|ml-kem-1024):
+  * the recipient carries an ML-KEM encapsulation ciphertext instead of an
+@@ -82,24 +87,6 @@
+ #define NONCE_LEN  CHACHA20_POLY1305_AEAD_IV_SIZE      /* 12 */
+ #define TAG_LEN    CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE /* 16 */
+ 
+-/* Parsed fields of the COSE_Encrypt container (pointers into the buffer) */
+-typedef struct {
+-    const uint8_t *body_protected;      /* serialized {1: 24} */
+-    size_t body_protected_len;
+-    const uint8_t *recipient_protected; /* serialized {1: COSE_ALG_RECIPIENT} */
+-    size_t recipient_protected_len;
+-    const uint8_t *nonce;               /* 12 bytes */
+-    const uint8_t *ciphertext;          /* without the trailing tag */
+-    size_t ciphertext_len;
+-    const uint8_t *auth_tag;            /* 16 bytes */
+-#ifdef MODULE_WOLFCRYPT_MLKEM
+-    const uint8_t *kem_ct;              /* ML-KEM encapsulation ciphertext */
+-    size_t kem_ct_len;
+-#else
+-    const uint8_t *ephemeral_pub;       /* 32 bytes */
+-#endif
+-} cose_encrypt_msg_t;
+-
+ /* Decode the alg (label 1) from a serialized protected-header map and check
+  * it is the one this firmware was built for */
+ static int _check_recipient_alg(const uint8_t *protected_hdr, size_t len)
+@@ -151,8 +138,25 @@ static int _map_get_bstr(nanocbor_value_t *map, int32_t wanted,
+     return -1;
+ }
+ 
+-static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
+-                               cose_encrypt_msg_t *msg)
++/* Drain a container iterator to its end so nanocbor_leave_container()
++ * advances the parent cursor correctly (leave uses the child's cursor) */
++static int _drain(nanocbor_value_t *container)
++{
++    while (!nanocbor_at_end(container)) {
++        if (nanocbor_skip(container) < 0) {
++            return -1;
++        }
++    }
++    return 0;
++}
++
++/* Full-unwind COSE_Encrypt parser: nanocbor_skip() does not descend into
++ * tagged items, and leave_container() needs drained children — walking and
++ * draining every container is the only way to learn the exact encoded
++ * length (needed by the detached/streaming payload container) and doubles
++ * as a completeness check for retry-parsing of streamed headers. */
++ssize_t suit_cose_encrypt_parse(const uint8_t *buf, size_t len,
++                                cose_encrypt_msg_t *msg)
+ {
+     nanocbor_value_t it, body, map, recipients, recipient;
+ #ifndef MODULE_WOLFCRYPT_MLKEM
+@@ -174,16 +178,29 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
+     }
+     if (nanocbor_enter_map(&body, &map) < 0 ||
+         _map_get_bstr(&map, COSE_HDR_IV, &msg->nonce, &nonce_len) < 0 ||
+-        nonce_len != NONCE_LEN) {
++        nonce_len != NONCE_LEN || _drain(&map) < 0) {
+         return -1;
+     }
+     nanocbor_leave_container(&body, &map);
+-    if (nanocbor_get_bstr(&body, &ct, &ct_len) < 0 || ct_len < TAG_LEN) {
++
++    /* ciphertext slot: bstr = attached (manifest container),
++     * null = detached (firmware-payload container, streams after header) */
++    if (nanocbor_get_bstr(&body, &ct, &ct_len) >= 0) {
++        if (ct_len < TAG_LEN) {
++            return -1;
++        }
++        msg->ciphertext = ct;
++        msg->ciphertext_len = ct_len - TAG_LEN;
++        msg->auth_tag = ct + ct_len - TAG_LEN;
++    }
++    else if (nanocbor_get_null(&body) >= 0) {
++        msg->ciphertext = NULL;
++        msg->ciphertext_len = 0;
++        msg->auth_tag = NULL;
++    }
++    else {
+         return -1;
+     }
+-    msg->ciphertext = ct;
+-    msg->ciphertext_len = ct_len - TAG_LEN;
+-    msg->auth_tag = ct + ct_len - TAG_LEN;
+ 
+     /* single recipient:
+      * X25519: [protected, {-1: COSE_Key}, h'']
+@@ -206,11 +223,11 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
+         msg->kem_ct_len != SUIT_MLKEM_CT_SIZE) {
+         return -1;
+     }
+-    return 0;
+ #else
+     if (nanocbor_enter_map(&recipient, &map) < 0) {
+         return -1;
+     }
++    msg->ephemeral_pub = NULL;
+     while (!nanocbor_at_end(&map)) {
+         int32_t key;
+         if (nanocbor_get_int32(&map, &key) < 0) {
+@@ -220,17 +237,35 @@ static int _parse_cose_encrypt(const uint8_t *buf, size_t len,
+             if (nanocbor_enter_map(&map, &key_map) < 0 ||
+                 _map_get_bstr(&key_map, COSE_KEY_PARAM_X,
+                               &msg->ephemeral_pub, &eph_len) < 0 ||
+-                eph_len != X25519_KEYSIZE) {
++                eph_len != X25519_KEYSIZE || _drain(&key_map) < 0) {
+                 return -1;
+             }
+-            return 0;
++            nanocbor_leave_container(&map, &key_map);
+         }
+-        if (nanocbor_skip(&map) < 0) {
++        else if (nanocbor_skip(&map) < 0) {
+             return -1;
+         }
+     }
+-    return -1;
++    if (msg->ephemeral_pub == NULL) {
++        return -1;
++    }
++    nanocbor_leave_container(&recipient, &map);
+ #endif
++
++    /* unwind: trailing slots, recipient, recipients, body */
++    if (_drain(&recipient) < 0) {
++        return -1;
++    }
++    nanocbor_leave_container(&recipients, &recipient);
++    if (_drain(&recipients) < 0) {
++        return -1;
++    }
++    nanocbor_leave_container(&body, &recipients);
++    if (!nanocbor_at_end(&body)) {
++        return -1;
++    }
++    nanocbor_leave_container(&it, &body);
++    return (ssize_t)(it.cur - buf);
+ }
+ 
+ /* HKDF info: COSE_KDF_Context (RFC 9053 5.2), byte-identical to the host:
+@@ -259,8 +294,9 @@ static int _build_kdf_context(const cose_encrypt_msg_t *msg,
+ 
+ /* AAD: Enc_structure (RFC 9052 5.3) ["Encrypt", <body protected bstr>, h''],
+  * reusing the received protected-header bytes verbatim */
+-static int _build_enc_structure(const cose_encrypt_msg_t *msg,
+-                                uint8_t *out, size_t out_len, size_t *written)
++int suit_cose_build_enc_structure(const cose_encrypt_msg_t *msg,
++                                  uint8_t *out, size_t out_len,
++                                  size_t *written)
+ {
+     nanocbor_encoder_t enc;
+     nanocbor_encoder_init(&enc, out, out_len);
+@@ -279,14 +315,14 @@ static int _build_enc_structure(const cose_encrypt_msg_t *msg,
+  * the same worker thread), and the sharing recovers sizeof(MlKemKey) of
+  * .bss on 32KB-RAM boards; see sys/include/suit/pq_scratch.h */
+ union suit_pq_scratch suit_pq_scratch;
+-#define _mlkem_state (suit_pq_scratch.mlkem)
++#define _mlkem_state (suit_pq_scratch.enc.mlkem)
+ #else
+ /* multi-KB struct: keep off the 4KB worker stack (see the ML-DSA
+  * .bss-corruption lesson in MLDSA_HARDWARE_FIXES.md) */
+ static MlKemKey _mlkem_state;
+ #endif
+ 
+-static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
++int suit_cose_derive_cek(const cose_encrypt_msg_t *msg, uint8_t *cek)
+ {
+     int ret;
+     MlKemKey *key = &_mlkem_state;
+@@ -323,7 +359,7 @@ static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
+     return ret;
+ }
+ #else
+-static int _derive_cek(const cose_encrypt_msg_t *msg, byte *cek)
++int suit_cose_derive_cek(const cose_encrypt_msg_t *msg, uint8_t *cek)
+ {
+     int ret;
+     uint8_t scalar[X25519_KEYSIZE];
+@@ -380,18 +416,19 @@ int suit_manifest_decrypt(uint8_t *buf, size_t size,
+         return SUIT_MANIFEST_ENCRYPT_PASSTHROUGH;
+     }
+ 
+-    if (_parse_cose_encrypt(buf, size, &msg) < 0) {
++    if (suit_cose_encrypt_parse(buf, size, &msg) < 0 ||
++        msg.ciphertext == NULL /* detached container: not a manifest */) {
+         LOG_INFO("suit: COSE_Encrypt parsing failed\n");
+         return -1;
+     }
+ 
+-    ret = _derive_cek(&msg, cek);
++    ret = suit_cose_derive_cek(&msg, cek);
+     if (ret != 0) {
+         LOG_INFO("suit: manifest CEK derivation failed: %d\n", ret);
+         return ret;
+     }
+ 
+-    if (_build_enc_structure(&msg, aad, sizeof(aad), &aad_len) < 0) {
++    if (suit_cose_build_enc_structure(&msg, aad, sizeof(aad), &aad_len) < 0) {
+         memset(cek, 0, sizeof(cek));
+         return -1;
+     }
+diff --git a/sys/suit/encrypt/encrypt_internal.h b/sys/suit/encrypt/encrypt_internal.h
+new file mode 100644
+index 0000000000..92654d6467
+--- /dev/null
++++ b/sys/suit/encrypt/encrypt_internal.h
+@@ -0,0 +1,103 @@
++/*
++ * Copyright (C) 2026 Miguel Arcilla
++ *
++ * This file is subject to the terms and conditions of the GNU Lesser
++ * General Public License v2.1. See the file LICENSE in the top level
++ * directory for more details.
++ */
++
++/**
++ * @ingroup     sys_suit
++ * @{
++ *
++ * @file
++ * @brief       Internals shared between SUIT manifest decryption
++ *              (decrypt.c) and streaming firmware-payload decryption
++ *              (payload_decrypt.c): COSE_Encrypt parsing, CEK derivation,
++ *              and Enc_structure AAD building. Private to sys/suit/encrypt.
++ *
++ * @author      Miguel Arcilla <miguelkristopharcilla@gmail.com>
++ * @}
++ */
++#ifndef SUIT_ENCRYPT_INTERNAL_H
++#define SUIT_ENCRYPT_INTERNAL_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <sys/types.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * @brief   Parsed fields of a COSE_Encrypt container (pointers into the
++ *          parsed buffer)
++ *
++ * The ciphertext may be attached (bstr slot: @p ciphertext / @p auth_tag
++ * set — the manifest container) or detached (null slot: @p ciphertext is
++ * NULL and the ciphertext streams after the header — the firmware-payload
++ * container).
++ */
++typedef struct {
++    const uint8_t *body_protected;      /**< serialized {1: 24} */
++    size_t body_protected_len;          /**< length of body_protected */
++    const uint8_t *recipient_protected; /**< serialized {1: <recipient alg>} */
++    size_t recipient_protected_len;     /**< length of recipient_protected */
++    const uint8_t *nonce;               /**< 12 bytes */
++    const uint8_t *ciphertext;          /**< without trailing tag; NULL if
++                                             detached */
++    size_t ciphertext_len;              /**< 0 if detached */
++    const uint8_t *auth_tag;            /**< 16 bytes; NULL if detached */
++#ifdef MODULE_WOLFCRYPT_MLKEM
++    const uint8_t *kem_ct;              /**< ML-KEM encapsulation ciphertext */
++    size_t kem_ct_len;                  /**< length of kem_ct */
++#else
++    const uint8_t *ephemeral_pub;       /**< 32-byte ephemeral X25519 key */
++#endif
++} cose_encrypt_msg_t;
++
++/**
++ * @brief   Parse a COSE_Encrypt container (attached or detached ciphertext)
++ *
++ * Fully unwinds every nested CBOR container, which both validates that
++ * @p buf holds the complete header (truncated input fails — callers
++ * accumulating a streamed header simply retry with more data) and yields
++ * the exact encoded length.
++ *
++ * @return  the container's encoded length in bytes (for a detached
++ *          container, the ciphertext stream starts at this offset)
++ * @return  <0 on parse error, truncation, or recipient-algorithm mismatch
++ */
++ssize_t suit_cose_encrypt_parse(const uint8_t *buf, size_t len,
++                                cose_encrypt_msg_t *msg);
++
++/**
++ * @brief   Derive the ChaCha20-Poly1305 content-encryption key
++ *
++ * X25519 ECDH (or ML-KEM decapsulation) with the embedded device key,
++ * then HKDF-SHA256 with the byte-exact COSE_KDF_Context as info.
++ *
++ * @param[in]   msg     parsed container
++ * @param[out]  cek     32-byte content-encryption key
++ *
++ * @return  0 on success, <0/wolfCrypt error otherwise
++ */
++int suit_cose_derive_cek(const cose_encrypt_msg_t *msg, uint8_t *cek);
++
++/**
++ * @brief   Build the Enc_structure AAD (RFC 9052 §5.3), reusing the
++ *          received protected-header bytes verbatim
++ *
++ * @return  0 on success (@p written set), <0 if @p out is too small
++ */
++int suit_cose_build_enc_structure(const cose_encrypt_msg_t *msg,
++                                  uint8_t *out, size_t out_len,
++                                  size_t *written);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* SUIT_ENCRYPT_INTERNAL_H */
++/** @} */
+diff --git a/sys/suit/encrypt/payload_decrypt.c b/sys/suit/encrypt/payload_decrypt.c
+new file mode 100644
+index 0000000000..a2e9b19cdd
+--- /dev/null
++++ b/sys/suit/encrypt/payload_decrypt.c
+@@ -0,0 +1,241 @@
++/*
++ * Copyright (C) 2026 Miguel Arcilla
++ *
++ * This file is subject to the terms and conditions of the GNU Lesser
++ * General Public License v2.1. See the file LICENSE in the top level
++ * directory for more details.
++ */
++
++/**
++ * @ingroup     sys_suit
++ * @{
++ *
++ * @file
++ * @brief       Streaming SUIT firmware-payload decryption
++ *              (detached-ciphertext COSE_Encrypt, ChaCha20-Poly1305 via
++ *              wolfCrypt's incremental AEAD API)
++ *
++ * Device-side counterpart of
++ * examples/advanced/suit_update/firmware-encryption/encrypt_firmware.py,
++ * ported from that example's wolfcrypt-sample.c streaming state machine
++ * (header reassembly across transport chunks, in-place chunk decryption,
++ * 16-byte trailing-tag lag buffer). Container parsing and CEK derivation
++ * are shared with the manifest decryption in decrypt.c (encrypt_internal.h).
++ *
++ * @author      Miguel Arcilla <miguelkristopharcilla@gmail.com>
++ * @}
++ */
++
++#ifdef MODULE_SUIT_FIRMWARE_ENCRYPT
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++
++#include "log.h"
++#include "suit/firmware_encrypt.h"
++
++#include <wolfssl/wolfcrypt/settings.h>
++#include <wolfssl/wolfcrypt/chacha20_poly1305.h>
++
++#include "encrypt_internal.h"
++#include "suit/pq_scratch.h"    /* SUIT_FW_ENC_HDR_LEN (+ shared buffer) */
++
++#define COSE_TAG_ENCRYPT    96
++#define TAG_LEN             CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE /* 16 */
++
++/* Header buffer: must hold the complete detached-ciphertext COSE_Encrypt
++ * header — X25519: 74 B measured + framing headroom; ML-KEM: the KEM
++ * encapsulation ciphertext dominates (1088/1568 B). Sizes defined next to
++ * the union in suit/pq_scratch.h: in ML-DSA + ML-KEM builds the buffer
++ * overlays the idle ML-DSA verify state (the difference between the
++ * full-PQ combo fitting and overflowing samr21-xpro's 32 KB RAM). */
++#ifdef SUIT_PQ_SCRATCH_SHARED
++#define _hdr_buf (suit_pq_scratch.enc.fw_hdr)
++#else
++static uint8_t _hdr_storage[SUIT_FW_ENC_HDR_LEN];
++#define _hdr_buf _hdr_storage
++#endif
++
++typedef struct {
++    coap_blockwise_cb_t inner;  /* storage helper receiving plaintext */
++    bool passthrough;           /* payload is not encrypted */
++    bool hdr_done;
++    bool failed;
++    bool started;               /* first chunk seen */
++    size_t hdr_fill;            /* bytes accumulated in _hdr_buf */
++    ChaChaPoly_Aead aead;
++    uint8_t pending[TAG_LEN];   /* tag lag: last 16 bytes seen so far */
++    size_t pending_fill;
++    size_t pt_off;              /* plaintext bytes forwarded so far */
++} payload_decrypt_state_t;
++
++/* Multi-hundred-byte state: static, not on the 4 KB worker stack
++ * (MLDSA_HARDWARE_FIXES.md lesson). The SUIT worker is single-threaded,
++ * so a single instance is safe. */
++static payload_decrypt_state_t _state;
++
++void suit_payload_decrypt_start(coap_blockwise_cb_t inner)
++{
++    memset(&_state, 0, sizeof(_state));
++    _state.inner = inner;
++}
++
++/* Feed ciphertext into the AEAD, always withholding the most recent
++ * TAG_LEN bytes (candidate trailing tag) in _state.pending; decrypts
++ * in place and forwards plaintext to the storage helper */
++static int _feed_ciphertext(payload_decrypt_state_t *s, void *arg,
++                            uint8_t *data, size_t len)
++{
++    size_t total = s->pending_fill + len;
++
++    if (total > TAG_LEN) {
++        size_t n = total - TAG_LEN;             /* safely decryptable */
++        size_t from_pending = n < s->pending_fill ? n : s->pending_fill;
++
++        if (from_pending > 0) {
++            uint8_t tmp[TAG_LEN];
++            if (wc_ChaCha20Poly1305_UpdateData(&s->aead, s->pending, tmp,
++                                               (word32)from_pending) != 0) {
++                return -1;
++            }
++            if (s->inner(arg, s->pt_off, tmp, from_pending, 1) < 0) {
++                return -1;
++            }
++            s->pt_off += from_pending;
++            memmove(s->pending, s->pending + from_pending,
++                    s->pending_fill - from_pending);
++            s->pending_fill -= from_pending;
++        }
++
++        size_t from_data = n - from_pending;
++        if (from_data > 0) {
++            /* in place: input and output may alias for ChaCha20 */
++            if (wc_ChaCha20Poly1305_UpdateData(&s->aead, data, data,
++                                               (word32)from_data) != 0) {
++                return -1;
++            }
++            if (s->inner(arg, s->pt_off, data, from_data, 1) < 0) {
++                return -1;
++            }
++            s->pt_off += from_data;
++            data += from_data;
++            len -= from_data;
++        }
++    }
++
++    /* stash the (potential) tag tail */
++    memcpy(s->pending + s->pending_fill, data, len);
++    s->pending_fill += len;
++    return 0;
++}
++
++int suit_payload_decrypt_helper(void *arg, size_t offset, uint8_t *buf,
++                                size_t len, int more)
++{
++    payload_decrypt_state_t *s = &_state;
++
++    if (s->failed || s->inner == NULL) {
++        return -1;
++    }
++
++    if (!s->started && len > 0) {
++        s->started = true;
++        if (len < 2 || buf[0] != 0xd8 || buf[1] != COSE_TAG_ENCRYPT) {
++            LOG_INFO("suit: payload not encrypted, passing through\n");
++            s->passthrough = true;
++        }
++    }
++    if (s->passthrough || (!s->started && !more)) {
++        /* not encrypted (or empty payload): forward unchanged */
++        return s->inner(arg, offset, buf, len, more);
++    }
++
++    if (!s->hdr_done && len > 0) {
++        size_t space = SUIT_FW_ENC_HDR_LEN - s->hdr_fill;
++        size_t take = len < space ? len : space;
++        if (take == 0) {
++            LOG_INFO("suit: payload COSE header exceeds %u bytes\n",
++                     (unsigned)SUIT_FW_ENC_HDR_LEN);
++            goto fail;
++        }
++        memcpy(_hdr_buf + s->hdr_fill, buf, take);
++        s->hdr_fill += take;
++        buf += take;
++        len -= take;
++
++        cose_encrypt_msg_t msg;
++        ssize_t hdr_len = suit_cose_encrypt_parse(_hdr_buf, s->hdr_fill, &msg);
++        if (hdr_len < 0 || msg.ciphertext != NULL /* must be detached */) {
++            if (hdr_len >= 0 || len > 0) {
++                /* attached container, or full buffer still unparseable */
++                LOG_INFO("suit: payload COSE header parsing failed\n");
++                goto fail;
++            }
++            return 0;               /* incomplete: wait for the next chunk */
++        }
++
++        uint8_t cek[CHACHA20_POLY1305_AEAD_KEYSIZE];
++        uint8_t aad[64];
++        size_t aad_len;
++        int ret = suit_cose_derive_cek(&msg, cek);
++        if (ret != 0) {
++            LOG_INFO("suit: payload CEK derivation failed: %d\n", ret);
++            goto fail;
++        }
++        if (suit_cose_build_enc_structure(&msg, aad, sizeof(aad),
++                                          &aad_len) < 0 ||
++            wc_ChaCha20Poly1305_Init(&s->aead, cek, msg.nonce,
++                                     CHACHA20_POLY1305_AEAD_DECRYPT) != 0 ||
++            wc_ChaCha20Poly1305_UpdateAad(&s->aead, aad,
++                                          (word32)aad_len) != 0) {
++            memset(cek, 0, sizeof(cek));
++            goto fail;
++        }
++        memset(cek, 0, sizeof(cek));
++        s->hdr_done = true;
++        LOG_INFO("suit: decrypting payload (header %d bytes)\n",
++                 (int)hdr_len);
++
++        /* bytes past the header already in the buffer are ciphertext */
++        if (s->hdr_fill > (size_t)hdr_len) {
++            if (_feed_ciphertext(s, arg, _hdr_buf + hdr_len,
++                                 s->hdr_fill - hdr_len) < 0) {
++                goto fail;
++            }
++        }
++    }
++
++    if (len > 0 && _feed_ciphertext(s, arg, buf, len) < 0) {
++        goto fail;
++    }
++
++    if (!more) {
++        uint8_t computed[TAG_LEN];
++        if (!s->hdr_done || s->pending_fill != TAG_LEN) {
++            LOG_INFO("suit: payload stream truncated\n");
++            goto fail;
++        }
++        if (wc_ChaCha20Poly1305_Final(&s->aead, computed) != 0 ||
++            wc_ChaCha20Poly1305_CheckTag(computed, s->pending) != 0) {
++            LOG_INFO("suit: payload authentication failed\n");
++            goto fail;
++        }
++        LOG_INFO("suit: payload decrypted (%u bytes)\n",
++                 (unsigned)s->pt_off);
++        /* only now does the storage helper see end-of-stream (finalize) */
++        int res = s->inner(arg, s->pt_off, buf, 0, 0);
++        memset(&s->aead, 0, sizeof(s->aead));
++        return res;
++    }
++    return 0;
++
++fail:
++    s->failed = true;
++    memset(&s->aead, 0, sizeof(s->aead));
++    return -1;
++}
++
++#else
++typedef int dont_be_pedantic;
++#endif /* MODULE_SUIT_FIRMWARE_ENCRYPT */
+diff --git a/sys/suit/handlers_command_seq.c b/sys/suit/handlers_command_seq.c
+index e86200c158..4a3bc6e039 100644
+--- a/sys/suit/handlers_command_seq.c
++++ b/sys/suit/handlers_command_seq.c
+@@ -43,6 +43,9 @@
+ #ifdef MODULE_SUIT_TRANSPORT_VFS
+ #include "suit/transport/vfs.h"
+ #endif
++#ifdef MODULE_SUIT_FIRMWARE_ENCRYPT
++#include "suit/firmware_encrypt.h"
++#endif
+ #include "suit/transport/mock.h"
+ 
+ #if defined(MODULE_PROGRESS_BAR)
+@@ -443,6 +446,19 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
+         return SUIT_ERR_STORAGE;
+     }
+ 
++#if defined(MODULE_SUIT_TRANSPORT_COAP) || defined(MODULE_SUIT_TRANSPORT_VFS)
++    /* With firmware encryption enabled, a streaming-decrypt wrapper sits
++     * in front of the storage helper: it strips/decrypts the COSE_Encrypt
++     * payload container and forwards plaintext chunks (plaintext payloads
++     * pass through unchanged) */
++#ifdef MODULE_SUIT_FIRMWARE_ENCRYPT
++    coap_blockwise_cb_t fetch_cb = suit_payload_decrypt_helper;
++    suit_payload_decrypt_start(_storage_helper);
++#else
++    coap_blockwise_cb_t fetch_cb = _storage_helper;
++#endif
++#endif
++
+     res = -1;
+ 
+     if (0) {}
+@@ -450,7 +466,7 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
+     else if ((strncmp(manifest->urlbuf, "coap://", 7) == 0) ||
+              (IS_USED(MODULE_NANOCOAP_DTLS) && strncmp(manifest->urlbuf, "coaps://", 8) == 0)) {
+         res = nanocoap_get_blockwise_url(manifest->urlbuf, CONFIG_SUIT_COAP_BLOCKSIZE,
+-                                         _storage_helper,
++                                         fetch_cb,
+                                          manifest);
+     }
+ #endif
+@@ -461,7 +477,7 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
+ #endif
+ #ifdef MODULE_SUIT_TRANSPORT_VFS
+     else if (strncmp(manifest->urlbuf, "file://", 7) == 0) {
+-        res = suit_transport_vfs_fetch(manifest, _storage_helper, manifest);
++        res = suit_transport_vfs_fetch(manifest, fetch_cb, manifest);
+     }
+ #endif
+     else {

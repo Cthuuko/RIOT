@@ -33,8 +33,24 @@
 #ifndef SUIT_PQ_SCRATCH_H
 #define SUIT_PQ_SCRATCH_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+/**
+ * @brief   Size of the streaming firmware-payload decryptor's COSE header
+ *          buffer (sys/suit/encrypt/payload_decrypt.c): the ML-KEM
+ *          encapsulation ciphertext dominates in KEM builds; X25519
+ *          headers are 74 B measured
+ */
+#if defined(MODULE_WOLFCRYPT_MLKEM1024)
+#define SUIT_FW_ENC_HDR_LEN     (1696)
+#elif defined(MODULE_WOLFCRYPT_MLKEM)
+#define SUIT_FW_ENC_HDR_LEN     (1216)
+#else
+#define SUIT_FW_ENC_HDR_LEN     (192)
 #endif
 
 #if defined(MODULE_WOLFCRYPT_MLDSA) && defined(MODULE_WOLFCRYPT_MLKEM)
@@ -47,11 +63,24 @@ extern "C" {
 
 /**
  * @brief   One static allocation shared by the (never concurrent) ML-DSA
- *          verify and ML-KEM decapsulation states
+ *          verify state and the encryption-side states
+ *
+ * The encryption members may be live at the same time as each other (the
+ * payload header buffer holds the KEM ciphertext *while* it is being
+ * decapsulated), so they are struct siblings — but all of them are dead
+ * whenever the ML-DSA verify state is live (verification finishes before
+ * the fetch directive runs), hence the outer union.
  */
 union suit_pq_scratch {
-    MlDsaKey mldsa;     /**< signature-verify state (libcose backend) */
-    MlKemKey mlkem;     /**< manifest-decryption state (suit encrypt module) */
+    MlDsaKey mldsa;         /**< signature-verify state (libcose backend) */
+    struct {
+        MlKemKey mlkem;     /**< decapsulation state (manifest + payload
+                                 CEK derivation, suit encrypt module) */
+#ifdef MODULE_SUIT_FIRMWARE_ENCRYPT
+        uint8_t fw_hdr[SUIT_FW_ENC_HDR_LEN];
+                            /**< streaming payload-decrypt header buffer */
+#endif
+    } enc;                  /**< encryption-side states (concurrent) */
 };
 
 extern union suit_pq_scratch suit_pq_scratch;

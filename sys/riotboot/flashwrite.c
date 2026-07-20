@@ -154,7 +154,18 @@ int riotboot_flashwrite_putbytes(riotboot_flashwrite_t *state,
                        state->flashpage_buf, RIOTBOOT_FLASHPAGE_BUFFER_SIZE);
             }
             else {
-                flashpage_write((uint8_t *)addr + flashpage_pos,
+                /* flashpage_pos/flashwrite_buffer_pos still hold their
+                 * values from the start of this input segment; the buffer
+                 * being flushed starts at the enclosing
+                 * RIOTBOOT_FLASHPAGE_BUFFER_SIZE boundary, not at the
+                 * segment start. The two only coincide for callers that
+                 * feed buffer-aligned chunks (as the plain CoAP blockwise
+                 * path happens to); unaligned producers (e.g. the SUIT
+                 * streaming payload decryptor, whose chunks are shifted
+                 * by the stripped COSE header) otherwise get their blocks
+                 * flashed at shifted, unaligned addresses. */
+                flashpage_write((uint8_t *)addr +
+                                (flashpage_pos - flashwrite_buffer_pos),
                                 state->flashpage_buf,
                                 RIOTBOOT_FLASHPAGE_BUFFER_SIZE);
             }

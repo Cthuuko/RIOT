@@ -1,0 +1,34 @@
+# samr21-xpro firmware-encryption feasibility - raw link results (2026-07-19/20)
+# BOARD=samr21-xpro make clean all per combo; size of suit_update.elf; RAM budget 32768 B
+
+=== ed-x25519-fw1 ===
+exit=0
+ 103904	    260	  21292	 125456	  1ea10	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== ed-x25519-fw0 ===
+exit=0
+ 102764	    260	  20900	 123924	  1e414	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== d44-x25519-fw1 ===
+exit=0
+ 117508	    260	  31020	 148788	  24534	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== d65-x25519-fw1 ===
+exit=2
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 308 bytes
+
+=== ed-kem768-fw1 ===
+=== ed-kem768-fw1 ===
+exit=0
+ 115488	    260	  27412	 143160	  22f38	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf
+
+=== d44-kem768-fw1 ===
+exit=2
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: /home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/riotboot_files/slot0.elf section `.bss' will not fit in region `ram'
+/usr/lib/gcc/arm-none-eabi/10.3.1/../../../arm-none-eabi/bin/ld: region `ram' overflowed by 252 bytes
+
+DONE
+=== d44-kem768-fw1 (after pq_scratch union rework) ===
+exit=0
+ 121636	    260	  31540	 153436	  2575c	/home/kuuko/masterthesis/RIOT/examples/advanced/suit_update/bin/samr21-xpro/suit_update.elf

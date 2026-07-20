@@ -35,6 +35,11 @@ def parse_arguments():
                         help='Manifest vendor uuid')
     parser.add_argument('--uuid-class', '-C', default="native",
                         help='Manifest class uuid')
+    parser.add_argument('--enc-suffix', default=None,
+                        help='Append this suffix (e.g. ".enc") to the URI '
+                             'basename while digest/size stay computed over '
+                             'the plaintext slot file — for encrypted '
+                             'firmware payloads (SUIT_FIRMWARE_ENCRYPT)')
     parser.add_argument('slotfiles', nargs="+",
                         help='The list of slot file paths')
     return parser.parse_args()
@@ -67,7 +72,10 @@ def main(args):
     for slot, image in enumerate(images):
         filename, offset, comp_name = image
 
-        uri = os.path.join(args.urlroot, os.path.basename(filename))
+        basename = os.path.basename(filename)
+        if args.enc_suffix:
+            basename += args.enc_suffix
+        uri = os.path.join(args.urlroot, basename)
 
         component = {
             "install-id": comp_name,
