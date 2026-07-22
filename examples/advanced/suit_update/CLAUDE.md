@@ -29,11 +29,17 @@ board/driver code.
 | `Makefile.ci` | Boards excluded from CI (insufficient RAM/flash) |
 | `main.c` | Shell commands (slot/storage inspection, GPIO-triggered update), riotboot integration |
 | `coap_handler.c` | CoAP resources: `/suit/trigger`, board name, version, active/inactive slot |
-| `README.md` | Overview + prerequisites |
-| `README.native.md` | Full no-hardware walkthrough (native/Linux target) |
-| `README.hardware.md` | Full real-hardware walkthrough (ethos, border router, flashing) |
-| `NATIVE_SETUP.md` | **E2E reference**: quick recipe for the full SUIT flow on `BOARD=native` (tap setup, key, build, publish, fetch, verify), incl. the default-on encrypted-manifest flow and its opt-out |
-| `SAMR21_EXAMPLES.md` | **E2E reference**: samr21-xpro walkthroughs for Ed25519 (A), ML-DSA-65/-44/-87 (B/C/D), and encrypted manifests (E — **unverified draft** with a bring-up checklist, do not treat as tested), incl. shared host/network setup and gotchas |
+| `README.md` | Upstream overview + prerequisites |
+| `README.native.md` | Upstream no-hardware walkthrough (native/Linux target) |
+| `README.hardware.md` | Upstream real-hardware walkthrough (ethos, border router, flashing) |
+| **`GUIDE.md`** | **Entry point**: concepts primer (manifest, slots, sign-then-encrypt, why PQC), the three axes, "pick your board" table, documentation map |
+| **`SETUP_COMMON.md`** | **Device-independent setup**: host prereqs, PQ prereqs, signing/device keys, the update cycle (publish → encrypt → notify), the **matching rule**, error-code table |
+| **`DEVICE_NATIVE.md`** | **E2E reference**: `BOARD=native`/`native64` walkthrough + full combination matrix |
+| **`DEVICE_SAMR21_XPRO.md`** | **E2E reference**: samr21-xpro over ethos + full combination matrix (the RAM-constrained board — many ❌). Supersedes `HARDWARE_SAMR21_WSL.md` + `SAMR21_EXAMPLES.md` |
+| **`DEVICE_NRF52840_DONGLE.md`** | **E2E reference**: nRF52840 Dongle (riotboot_dfu two-stage install, CDC-ECM) + full combination matrix (all fit; full-PQ verified) |
+| **`GOTCHAS.md`** | **All pitfalls**, grouped by symptom, with a symptom→section lookup table |
+| **`FINDINGS.md`** | **All measurements/feasibility/status**: per-board RAM tables, the wolfCrypt ML-KEM heap discovery, hardware-only findings, open items |
+| `NATIVE_SETUP.md`, `HARDWARE_SAMR21_WSL.md`, `SAMR21_EXAMPLES.md`, `HARDWARE_NRF52840_DONGLE_WSL.md` | Retired — one-line redirect stubs pointing at the `DEVICE_*.md` successors |
 | `MANIFEST_ENCRYPTION_PLAN.md` | Manifest-encryption feature plan + status checklist — resume work from the first unchecked step |
 | `MANIFEST_ENCRYPTION_CHANGES.md` | Manifest-encryption code-change summary: wire format, opt-out contract, per-file change list, verification results, gotchas |
 | `manifest-encryption/` | Standalone host-only interop example (Python `cryptography` encrypt ↔ wolfCrypt decrypt); its `encrypt_manifest.py` doubles as the host-side manifest encryption tool |
@@ -67,24 +73,35 @@ pip3 install --user 'aiocoap[linkheader]>=0.4.1'
 
 ## E2E testing (use the reference docs)
 
-`NATIVE_SETUP.md` and `SAMR21_EXAMPLES.md` are the canonical, tested
-recipes for setting up and exercising the SUIT update workflow end-to-end.
+`SETUP_COMMON.md` plus the three `DEVICE_*.md` guides are the canonical,
+tested recipes for exercising the SUIT update workflow end-to-end.
 **When running e2e tests, follow them step by step instead of improvising
 commands**:
 
-- `NATIVE_SETUP.md` — `BOARD=native` (→ `native64` on 64-bit hosts): tap
+- `SETUP_COMMON.md` — everything board-independent: host prerequisites, key
+  generation (ed25519 and ML-DSA via `suit/genkey`), device encryption keys,
+  and the four-step update cycle (fileserver → `suit/publish` → optional
+  manual manifest encryption → `suit/notify`). Also holds the **matching
+  rule** (build flags decide what the device accepts; publish flags decide
+  what is produced; plaintext always passes through) and the error-code table.
+- `DEVICE_NATIVE.md` — `BOARD=native` (→ `native64` on 64-bit hosts): tap
   networking, dedicated ed25519 key, build+term, manifest
   generate/sign/publish, `suit fetch`, verification via `storage_content`;
-  covers both the default encrypted-manifest flow (step 6b: encrypt after
-  sign; expect `manifest decrypted (N bytes)` on-device) and the
-  `SUIT_MANIFEST_ENCRYPT=0` opt-out (step 9).
-- `SAMR21_EXAMPLES.md` — real `samr21-xpro` hardware over ethos:
-  Example A (Ed25519) and Example B (ML-DSA-65), sharing the same one-time
-  host setup (Parts 0–2) and network bridge; only the `SUIT_KEY*`
-  variables differ. Its "Gotchas" section explains the expected
-  `res=-5` on seqnr replay, terminal/flash port contention on
-  `/dev/ttyACM1`, and the misleading `Non-library key type not
-  implemented` signing error.
+  covers the default encrypted-manifest flow, encrypted payloads, and the
+  opt-outs.
+- `DEVICE_SAMR21_XPRO.md` — real `samr21-xpro` over ethos: usbipd attach,
+  network bridge, flash, publish/notify, an ML-DSA-65 worked example, and the
+  full combination matrix including the confirmed-infeasible rows.
+- `DEVICE_NRF52840_DONGLE.md` — nRF52840 Dongle: the **two-stage
+  `riotboot_dfu` install** (a plain `make flash` cannot do OTA — `res=-50`),
+  CDC-ECM networking, CDC-ACM shell, and the full-PQ worked example.
+
+`GOTCHAS.md` is the single place for failure modes — the expected `res=-5` on
+seqnr replay, terminal/flash port contention, the misleading `Non-library key
+type not implemented` signing error, `APP_VER` epoch drift, WSL USB
+re-attachment, and the encryption key/algo mismatches. `FINDINGS.md` holds the
+feasibility numbers; where an older `*_CHANGES.md` disagrees, `FINDINGS.md`
+§3.1 wins.
 
 Rules for Claude when executing these flows:
 
@@ -139,6 +156,12 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
 ```
 
 ## Gotchas
+
+> **Reader-facing versions of everything below now live in `GOTCHAS.md`
+> (pitfalls, grouped by symptom) and `FINDINGS.md` (measurements and
+> feasibility).** Point users at those; this section is the condensed
+> in-context summary. Where the two disagree on feasibility numbers,
+> `FINDINGS.md` §3.1 is authoritative.
 
 - Default `BOARD` is `samr21-xpro`; override with `BOARD=<name>`.
 - On a 64-bit host, `BOARD=native` resolves to the actual board `native64`
@@ -218,7 +241,7 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   Plaintext manifests still pass through. Verified E2E on native64 **and
   on real samr21-xpro hardware** (2026-07-19, Ed25519+X25519: full
   encrypted OTA + reboot, mixed with plain pass-through updates —
-  SAMR21_EXAMPLES.md Example E; watch the 64-char URL budget: the notify
+  DEVICE_SAMR21_XPRO.md matrix row 2; watch the 64-char URL budget: the notify
   path is 61 chars with the mandatory short `riot.suit.enc` name). Key gotchas: on-device X25519 uses the
   **c25519 pkg**, never `wolfcrypt_curve25519` (symbol collision
   `fprime_*` with libcose's c25519 backend); HKDF `info`/AAD CBOR must be
@@ -226,7 +249,7 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   `wc_curve25519_set_rng()` (blinding default). See
   `MANIFEST_ENCRYPTION_CHANGES.md` (changes/gotchas),
   `MANIFEST_ENCRYPTION_PLAN.md` (status), `manifest-encryption/README.md`
-  (wire format), `NATIVE_SETUP.md` steps 6b/9 (workflow).
+  (wire format), `DEVICE_NATIVE.md` steps 6/9 (workflow).
   **Post-quantum variant**: `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768|ml-kem-1024`
   swaps the X25519 recipient for an ML-KEM encapsulation (compile-time
   dispatch; private-use COSE algs -70768/-70769; device key = 64B FIPS 203
@@ -287,8 +310,8 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   ML-KEM heap-vs-stack issue above (found via this feature's samr21
   bring-up, but it's a manifest-encryption-layer bug, not specific to
   payload encryption). See `FIRMWARE_ENCRYPTION_CHANGES.md`,
-  `NATIVE_SETUP.md` step 6c, `SAMR21_EXAMPLES.md` Example F (unverified
-  draft, cookbook recipe 8 confirmed infeasible).
+  `DEVICE_NATIVE.md` step 7, `DEVICE_SAMR21_XPRO.md` matrix rows 3–7
+  (row 14, the full-PQ combo, confirmed infeasible).
 - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
 - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —

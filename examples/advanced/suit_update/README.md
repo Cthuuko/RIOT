@@ -1,5 +1,12 @@
 # Overview
 
+> **Looking for the post-quantum thesis workflow?** Start at
+> **[GUIDE.md](GUIDE.md)** — it covers ML-DSA signing, manifest/payload
+> encryption (X25519 and ML-KEM), and per-board walkthroughs with a full
+> combination matrix for `native`, `samr21-xpro`, and `nrf52840dongle`.
+> The document below is upstream RIOT's original, classical-Ed25519-only
+> overview.
+
 This example shows how to integrate SUIT-compliant firmware updates into a
 RIOT application. It implements basic support of the SUIT architecture using
 the manifest format specified in
