@@ -42,9 +42,21 @@ static ssize_t _trigger_handler(coap_pkt_t *pkt, uint8_t *buf, size_t len,
             code = COAP_CODE_REQUEST_ENTITY_TOO_LARGE;
         }
         else {
+            /* A CoAP payload is length-delimited and NOT NUL-terminated, so
+             * neither strlen() nor a plain "%s" may be used on it: both run
+             * past the end of the payload into whatever the packet buffer
+             * happens to hold, until they chance upon a zero byte. That
+             * silently appends garbage to the manifest URL (seen as
+             * `.../riot.suit.latest.bin\xef\xbf\xbd` in the download log,
+             * followed by "error getting manifest"), and whether it happens at
+             * all depends on the URL length -- so a short server address masks
+             * the bug and a longer one exposes it. suit_worker_trigger() copies
+             * into its own buffer and terminates there, so passing the payload
+             * pointer with the real length is both correct and copy-free. */
             code = COAP_CODE_CREATED;
-            LOG_INFO("suit: received URL: \"%s\"\n", (char *)pkt->payload);
-            suit_worker_trigger((char *)pkt->payload, strlen((char *)pkt->payload));
+            LOG_INFO("suit: received URL: \"%.*s\"\n", (int)payload_len,
+                     (char *)pkt->payload);
+            suit_worker_trigger((char *)pkt->payload, payload_len);
         }
     }
     else {

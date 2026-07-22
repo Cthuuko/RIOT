@@ -13,6 +13,13 @@ confirmed working on real hardware.
 **Prerequisite:** [SETUP_COMMON.md](SETUP_COMMON.md) §1 (host tools) and §3
 (a signing key). Concepts: [GUIDE.md](GUIDE.md).
 
+> This is the **tethered** guide — updates travel over the dongle's own USB.
+> For the wireless topology (this board as an 802.15.4 node, a Raspberry Pi
+> serving CoAP behind a 6LoWPAN border router), build with `DONGLE_NETIF=radio`
+> and follow [DEVICE_802154_PI.md](DEVICE_802154_PI.md). The two-stage install
+> procedure below is unchanged there — only the update traffic moves off USB.
+> Get this one working first.
+
 ---
 
 ## What is different on this board
@@ -29,6 +36,12 @@ The dongle has **no UART-to-USB bridge**, so ethos (which rides a hardware
 UART) enumerates nothing. The app `Makefile` therefore forces `USE_ETHOS=0`
 for this board and brings the link up with
 `dist/tools/usb-cdc-ecm/start_network.sh` (host `fe80::1`, device `fe80::2`).
+
+That is the `DONGLE_NETIF=cdc-ecm` default. `DONGLE_NETIF=radio` swaps the
+CDC-ECM link (and `gnrc_uhcpc`) for the nRF52840's own 802.15.4 radio, keeping
+CDC-ACM, `usbus_dfu` and the flash geometry exactly as they are — slot offsets
+are identical between the two modes. USB is still required either way: it is
+the board's only console and its only flashing route.
 
 > ### ❗ Do **not** use a plain `make flash` — it cannot do OTA
 >

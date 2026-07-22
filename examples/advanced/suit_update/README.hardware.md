@@ -103,9 +103,18 @@ interface:
 
 #### Provision the wireless device
 [setup-wireless-provision]: #Provision-the-wireless-device
-First un-comment L28 in the application [Makefile](Makefile) so `netdev_default`
-is included in the build. In this scenario the node will be connected through a border
-router. Ethos must be disabled in the firmware when building and flashing the firmware:
+In this scenario the node will be connected through a border router, so ethos
+must be disabled in the firmware when building and flashing it. `USE_ETHOS=0`
+is all that is needed — the application [Makefile](Makefile) then selects
+`netdev_default` (the board's own radio) by itself. No Makefile edit is
+required; the older instruction to "un-comment L28" no longer applies.
+
+For the nRF52840 Dongle, additionally pass `DONGLE_NETIF=radio` — that board
+has its own networking branch and defaults to USB CDC-ECM.
+
+> A fully worked version of this wireless setup, with a Raspberry Pi as the CoAP
+> server and a SLIP-attached border router, is in
+> [DEVICE_802154_PI.md](DEVICE_802154_PI.md).
 
     $ USE_ETHOS=0 BOARD=samr21-xpro make -C examples/advanced/suit_update clean flash -j4
 

@@ -191,8 +191,16 @@ endif
 USEMODULE += suit_transport_vfs
 USEMODULE += vfs_default
 
-# Display a progress bar during firmware download
-USEMODULE += progress_bar
+# Display a progress bar during firmware download. Set PROGRESS_BAR=0 to drop
+# it: it reprints on every received block, which is the single largest source
+# of console traffic during an update. On the nRF52840 dongle that traffic goes
+# through USB CDC-ACM, where a stalled (attached but not draining) host makes
+# printf() block indefinitely -- see the buffer-size comment in the dongle
+# block above. Turning it off makes an OTA independent of the console.
+PROGRESS_BAR ?= 1
+ifeq (1,$(PROGRESS_BAR))
+  USEMODULE += progress_bar
+endif
 
 # Optional feature to trigger suit update through gpio callback
 FEATURES_OPTIONAL += periph_gpio_irq
@@ -213,41 +221,39 @@ endif
 # The nRF52840 dongle has no UART-to-USB bridge; its only host link is the
 # nRF52840's native USB. ethos rides on a hardware UART, so an ethos build
 # enumerates nothing on the dongle's USB. Network it over USB CDC-ECM
-# (USB Ethernet) with the shell on CDC-ACM instead.
+# (USB Ethernet) with the shell on CDC-ACM instead -- or, with
+# DONGLE_NETIF=radio, over the nRF52840's own IEEE 802.15.4 radio behind a
+# 6LoWPAN border router, keeping only the shell on USB (DEVICE_802154_PI.md).
 ifeq (nrf52840dongle,$(BOARD))
   USE_ETHOS ?= 0
-endif
+  DONGLE_NETIF ?= cdc-ecm
+  ifeq (,$(filter cdc-ecm radio,$(DONGLE_NETIF)))
+    $(error DONGLE_NETIF must be `cdc-ecm` or `radio`, got `$(DONGLE_NETIF)`)
+  endif
 
-# Change this to 0 to not use ethos
-USE_ETHOS ?= 1
+  # Everything in this block is required whatever the dongle is networked
+  # over, which is why it lives here rather than in the CDC-ECM arm of the
+  # USE_ETHOS selector below.
 
-ifeq (1,$(USE_ETHOS))
-  USEMODULE += stdio_ethos
-  USEMODULE += gnrc_uhcpc
-
-  # ethos baudrate can be configured from make command
-  ETHOS_BAUDRATE ?= 115200
-  CFLAGS += -DETHOS_BAUDRATE=$(ETHOS_BAUDRATE)
-
-  # make sure ethos and uhcpd are built
-  TERMDEPS += host-tools
-
-  # For local testing, run
-  #
-  #     $ cd dist/tools/ethos; sudo ./setup_network.sh riot0 2001:db8::0/64
-  #
-  #... in another shell and keep it running.
-  IFACE ?= riot0
-  TERMPROG = $(RIOTTOOLS)/ethos/ethos
-  TERMFLAGS = $(IFACE) $(PORT)
-else ifeq (nrf52840dongle,$(BOARD))
-  # USB CDC-ECM (USB Ethernet) networking over the dongle's native USB, with
-  # the shell on CDC-ACM. The host side is driven by usb-cdc-ecm/start_network.sh
-  # (host fe80::1, device fe80::2, uhcpd pushes the prefix) instead of ethos.
+  # USB is the dongle's only console: with no UART-to-USB bridge, a build
+  # without stdio_cdc_acm enumerates and runs but prints nothing at all --
+  # network up, prompt echoing, every printf silently empty. A DONGLE_NETIF=
+  # radio build still needs it (and needs USB plugged in) even though its
+  # update traffic never touches USB.
   USEMODULE += auto_init_usbus
-  USEMODULE += usbus_cdc_ecm
   USEMODULE += stdio_cdc_acm
-  USEMODULE += gnrc_uhcpc
+
+  # Enlarge the CDC-ACM stdio ring buffer well past its 128B default
+  # (sys/include/usb/usbus/cdc/acm.h). This is not just about dropped
+  # characters: sys/usb/usbus/cdc/acm/cdc_acm_stdio.c's _write() loops
+  # `while (len) { n = usbus_cdc_acm_submit(...); len -= n; }`, and submit()
+  # returns 0 once the ring buffer is full unless the line state is
+  # DISCONNECTED -- so a host that is attached but not draining (a dead
+  # terminal that never dropped DTR, say) makes printf() spin forever and
+  # hangs the device mid-update. A single `ifconfig` already emits ~600B, and
+  # progress_bar prints on every downloaded block. 1KB costs nothing on this
+  # board's 256KB and keeps bursty output from wedging an OTA.
+  CFLAGS += -DCONFIG_USBUS_CDC_ACM_STDIO_BUF_SIZE=1024
 
   # The dongle's stock Nordic USB DFU bootloader cannot install riotboot (it
   # protects the MBR at 0x0, where plain riotboot links), so SUIT OTA is flashed
@@ -273,6 +279,39 @@ else ifeq (nrf52840dongle,$(BOARD))
   # dfu-util flash to agree (and stops slot 1 overrunning the Open bootloader).
   ROM_OFFSET ?= 0x1000
   ROM_LEN ?= 0xdf000
+endif
+
+# Change this to 0 to not use ethos
+USE_ETHOS ?= 1
+
+ifeq (1,$(USE_ETHOS))
+  USEMODULE += stdio_ethos
+  USEMODULE += gnrc_uhcpc
+
+  # ethos baudrate can be configured from make command
+  ETHOS_BAUDRATE ?= 115200
+  CFLAGS += -DETHOS_BAUDRATE=$(ETHOS_BAUDRATE)
+
+  # make sure ethos and uhcpd are built
+  TERMDEPS += host-tools
+
+  # For local testing, run
+  #
+  #     $ cd dist/tools/ethos; sudo ./setup_network.sh riot0 2001:db8::0/64
+  #
+  #... in another shell and keep it running.
+  IFACE ?= riot0
+  TERMPROG = $(RIOTTOOLS)/ethos/ethos
+  TERMFLAGS = $(IFACE) $(PORT)
+else ifeq (nrf52840dongle/cdc-ecm,$(BOARD)/$(DONGLE_NETIF))
+  # USB CDC-ECM (USB Ethernet) networking over the dongle's native USB, with
+  # the shell on CDC-ACM. The host side is driven by usb-cdc-ecm/start_network.sh
+  # (host fe80::1, device fe80::2, uhcpd pushes the prefix) instead of ethos.
+  # (auto_init_usbus / stdio_cdc_acm / usbus_dfu / ROM geometry are selected
+  # unconditionally in the nrf52840dongle block further up -- they are not
+  # CDC-ECM-specific.)
+  USEMODULE += usbus_cdc_ecm
+  USEMODULE += gnrc_uhcpc
 
   # IPv6 prefix delegated to the device over the CDC-ECM link
   IPV6_PREFIX ?= 2001:db8::/64
@@ -280,6 +319,10 @@ else ifeq (nrf52840dongle,$(BOARD))
   TERMPROG ?= sudo sh $(RIOTTOOLS)/usb-cdc-ecm/start_network.sh
   TERMFLAGS ?= $(IPV6_PREFIX)
 else
+  # Wireless node behind a 6LoWPAN border router: the board's own radio
+  # (samr21-xpro's at86rf233, the dongle's nrf802154 with DONGLE_NETIF=radio).
+  # No gnrc_uhcpc here on purpose -- a node gets its prefix from the border
+  # router's router advertisements, not over UHCP. See DEVICE_802154_PI.md.
   USEMODULE += netdev_default
 endif
 

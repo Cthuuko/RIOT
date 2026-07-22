@@ -37,6 +37,7 @@ board/driver code.
 | **`DEVICE_NATIVE.md`** | **E2E reference**: `BOARD=native`/`native64` walkthrough + full combination matrix |
 | **`DEVICE_SAMR21_XPRO.md`** | **E2E reference**: samr21-xpro over ethos + full combination matrix (the RAM-constrained board — many ❌). Supersedes `HARDWARE_SAMR21_WSL.md` + `SAMR21_EXAMPLES.md` |
 | **`DEVICE_NRF52840_DONGLE.md`** | **E2E reference**: nRF52840 Dongle (riotboot_dfu two-stage install, CDC-ECM) + full combination matrix (all fit; full-PQ verified) |
+| **`DEVICE_802154_PI.md`** | **E2E reference — mesh mode**: both real boards as untethered 802.15.4 nodes, Raspberry Pi 4 as CoAP server + notifier, openlabs KW41Z-mini as SLIP border router. Pi 4 host setup (image, headless SSH, mini-UART, OpenOCD 0.12), GPIO wiring table, `DONGLE_NETIF=radio` |
 | **`GOTCHAS.md`** | **All pitfalls**, grouped by symptom, with a symptom→section lookup table |
 | **`FINDINGS.md`** | **All measurements/feasibility/status**: per-board RAM tables, the wolfCrypt ML-KEM heap discovery, hardware-only findings, open items |
 | `NATIVE_SETUP.md`, `HARDWARE_SAMR21_WSL.md`, `SAMR21_EXAMPLES.md`, `HARDWARE_NRF52840_DONGLE_WSL.md` | Retired — one-line redirect stubs pointing at the `DEVICE_*.md` successors |
@@ -314,6 +315,14 @@ BOARD=samr21-xpro make -C examples/advanced/suit_update term
   (row 14, the full-PQ combo, confirmed infeasible).
 - `USE_ETHOS=1` by default for real hardware (serial-over-IP); set
   `USE_ETHOS=0` and use a border router instead for wireless (BLE/802.15.4) setups.
+  That is enough on the samr21 (the Makefile's final `else` then selects
+  `netdev_default` → `at86rf233` → 6LoWPAN). The **nRF52840 dongle has its own
+  networking branch** and additionally needs `DONGLE_NETIF=radio` (default
+  `cdc-ecm`) — that swaps `usbus_cdc_ecm`/`gnrc_uhcpc` for `netdev_default`
+  (→ `nrf802154`) while keeping `stdio_cdc_acm` (the board's only console),
+  `usbus_dfu` and the pinned `ROM_OFFSET`/`ROM_LEN`; slot geometry is identical
+  in both modes (`SLOT0_OFFSET 0x4000`, `SLOT1_OFFSET 0x71800`). Full wireless
+  workflow: `DEVICE_802154_PI.md`.
 - Signing keys live in `SUIT_KEY_DIR`, default `~/.local/share/RIOT/keys` —
   auto-generated on first use, or manually via the `suit/genkey` target.
 - USB/serial flashing from WSL2 requires `usbipd-win` passthrough from

@@ -155,6 +155,15 @@ Recommended path if you are recreating this from scratch: **native first**
 debug probe), then the **samr21-xpro** if you want the constrained-device
 results.
 
+Those three guides are all **tethered**: one board, wired to the build host,
+updates travelling over the same cable as the shell. Once a board works that
+way, [**DEVICE_802154_PI.md**](DEVICE_802154_PI.md) moves it to **mesh mode** —
+both real boards as untethered 802.15.4 nodes, a Raspberry Pi 4 serving the
+CoAP artifacts and triggering updates through a 6LoWPAN border router. Same
+manifests, same crypto, same matching rule; only the path the packets take
+changes. Do it after at least one tethered board works end to end, so a failure
+there is unambiguously a networking problem.
+
 ---
 
 ## 5. The documentation map
@@ -165,6 +174,7 @@ SETUP_COMMON.md     ← host prerequisites, keys, publish/notify — do this onc
 ├── DEVICE_NATIVE.md
 ├── DEVICE_SAMR21_XPRO.md          each: connect → flash → network →
 └── DEVICE_NRF52840_DONGLE.md      steps → FULL combination matrix
+DEVICE_802154_PI.md ← mesh mode: same boards, wireless, Pi as CoAP server
 GOTCHAS.md          ← every known pitfall, grouped by symptom
 FINDINGS.md         ← measurements, feasibility, what was proven when
 ```

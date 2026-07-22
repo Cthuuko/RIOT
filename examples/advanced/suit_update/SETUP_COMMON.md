@@ -6,6 +6,8 @@ once, then continue in your board's guide:
 - [DEVICE_NATIVE.md](DEVICE_NATIVE.md) — no hardware needed
 - [DEVICE_SAMR21_XPRO.md](DEVICE_SAMR21_XPRO.md) — SAMR21-xpro over ethos
 - [DEVICE_NRF52840_DONGLE.md](DEVICE_NRF52840_DONGLE.md) — nRF52840 Dongle over USB
+- [DEVICE_802154_PI.md](DEVICE_802154_PI.md) — **mesh mode**: both boards as
+  wireless 802.15.4 nodes, a Raspberry Pi serving CoAP behind a border router
 
 New to SUIT? Read [GUIDE.md](GUIDE.md) first — it explains what a manifest,
 a slot, and the three crypto axes actually are. This file assumes you know

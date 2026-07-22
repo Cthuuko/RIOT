@@ -118,7 +118,9 @@ int swprintf(string_writer_t *sw, FLASH_ATTR const char *restrict format, ...);
 #endif
 
 /* explicit_bzero is provided if:
- * - glibc is used as C lib (only with board natvie)
+ * - glibc is used as C lib (board native, and host-tool builds that pull this
+ *   header in via dist/tools -- those compile with the host toolchain, so
+ *   CPU_NATIVE is not defined for them and only __GLIBC__ catches the case)
  * - newlib is used and __BSD_VISIBILE is set
  *      - except for ESP8266, which is using an old version of newlib without it
  * - picolibc is used and __BSD_VISIBLE is set
@@ -126,6 +128,7 @@ int swprintf(string_writer_t *sw, FLASH_ATTR const char *restrict format, ...);
  * for all other cases, we provide it here
  */
 #if !defined(CPU_NATIVE) \
+    && !defined(__GLIBC__) \
     && !(IS_USED(MODULE_PICOLIBC) && __BSD_VISIBLE) \
     && !(IS_USED(MODULE_NEWLIB) && __BSD_VISIBLE && !defined(CPU_ESP8266))
 

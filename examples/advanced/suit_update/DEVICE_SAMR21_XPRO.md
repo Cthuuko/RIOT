@@ -12,6 +12,12 @@ the working ones.
 **Prerequisite:** [SETUP_COMMON.md](SETUP_COMMON.md) §1 (host tools) and §3
 (a signing key). Concepts: [GUIDE.md](GUIDE.md).
 
+> This is the **tethered** guide — the board hangs off the build host and the
+> update travels over the same serial cable as the shell. For the wireless
+> topology (this board as an 802.15.4 node, a Raspberry Pi serving CoAP behind a
+> 6LoWPAN border router), see [DEVICE_802154_PI.md](DEVICE_802154_PI.md). Get
+> this one working first.
+
 ---
 
 ## What is different on this board

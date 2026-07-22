@@ -29,8 +29,18 @@ Companion docs: [SETUP_COMMON.md](SETUP_COMMON.md) (the correct steps),
 | `region 'ram' overflowed by N bytes` | [RAM limits](#ram-limits) |
 | `cose/sign.h: No such file` | [Make overrides](#build--toolchain) |
 | Terminal floods with `$` garbage | [Serial contention](#serial-port-contention-samr21) |
+| Node has only a `fe80::` address, never `2001:db8::` | [Mesh mode](#mesh-mode-802154--raspberry-pi-device_802154_pimd) |
+| `error getting manifest` + node cannot ping the CoAP server | [Mesh mode](#mesh-mode-802154--raspberry-pi-device_802154_pimd) |
+| Intermittent SLIP breakage that looks like a flaky radio | [Mesh mode](#mesh-mode-802154--raspberry-pi-device_802154_pimd) |
+| `sliptty: Unknown packet type 0x??` + binary garbage | [Mesh mode](#mesh-mode-802154--raspberry-pi-device_802154_pimd) |
+| BR shell answers nothing, `uhcp_client(): no reply received` | [Mesh mode](#mesh-mode-802154--raspberry-pi-device_802154_pimd) |
+| `Error connecting DP: cannot read IDR` (SWD flash) | [Mesh mode](#mesh-mode-802154--raspberry-pi-device_802154_pimd) |
+| OpenOCD `DEPRECATED! use 'bcm2835gpio peripheral_base'` | [Harmless](#mesh-mode-802154--raspberry-pi-device_802154_pimd) |
+| Radio-mode dongle boots but prints nothing | [Mesh mode](#mesh-mode-802154--raspberry-pi-device_802154_pimd) |
 | `uhcpd: not found` | [Host tools](#build--toolchain) |
 | Nondeterministic AEAD tag failures on native | [Worker stack on native](#worker-stack-overflow-on-native) |
+| Dongle freezes on `ifconfig` or stalls mid-update | [CDC-ACM stdio blocks](#networking--terminals) |
+| Dongle console dies after a reset and never returns | [CDC-ACM re-enumeration](#networking--terminals) |
 
 ---
 
@@ -368,14 +378,130 @@ shell variable, then passed explicitly. Needed for `suit/publish` *and* for
 - **On the samr21, the ethos shell *is* the board terminal.** Do not run a
   second `make term` under ethos; they fight over `/dev/ttyACM*`.
 
+- **The dongle's console "stops working" after a reset.** Its CDC-ACM port is
+  provided by the running firmware, so any reboot — DFU flash, `reset`, or the
+  reboot at the end of a successful update — removes it from USB and brings it
+  back, frequently on a different `ttyACM*` number. `pyterm`/`make term` do not
+  reconnect. Use `/dev/serial/by-id/...` (stable across renumbering) and wrap
+  `picocom` in a retry loop. The samr21's EDBG port is unaffected: it belongs to
+  the onboard debugger, not to the firmware.
+
 - **`riot0` cleanup:** always exit the board terminal *before* killing the
   `setup_network.sh` shell, or the tap interface leaks.
+
+- **The dongle hangs mid-update, or freezes on `ifconfig`.** Not a crash —
+  `printf()` is spinning. `cdc_acm_stdio.c`'s `_write()` loops
+  `while (len) { n = usbus_cdc_acm_submit(...); len -= n; }`, and `submit()`
+  returns **0** when its ring buffer is full, *unless* the line state is
+  `DISCONNECTED` (then it discards and returns). So no terminal at all is safe,
+  but a terminal that is **attached and not draining** — a dead `pyterm` that
+  never dropped DTR, a stalled `picocom` — blocks the device forever inside a
+  print. `ifconfig` (~600 B) and `progress_bar` (reprints per received block)
+  are the usual triggers against the 128 B default buffer. Mitigations, both now
+  in the app `Makefile`: `CONFIG_USBUS_CDC_ACM_STDIO_BUF_SIZE=1024` for the
+  dongle, and `PROGRESS_BAR=0` to make an OTA independent of the console
+  entirely. Also close stale terminals rather than leaving them attached.
 
 - **Never disable IRQs around USB-CDC-ACM `printf`.** stdio is USB on the
   dongle; a multi-line print with interrupts disabled deadlocks the device
   (the buffer fills and USB cannot drain it). The stock `current_slot`
   command gets away with one short line under `irq_disable()` — do not copy
   that pattern for anything longer.
+
+### Mesh mode: 802.15.4 + Raspberry Pi ([DEVICE_802154_PI.md](DEVICE_802154_PI.md))
+
+- **A node shows only a `fe80::` address, no `2001:db8::`.** It heard no router
+  advertisement. Almost always a **channel or PAN-ID mismatch** between the
+  border router and the node — pass identical `DEFAULT_CHANNEL` /
+  `DEFAULT_PAN_ID` to *both* builds (both Makefiles include
+  `makefiles/default-radio-settings.inc.mk`, so the variables mean the same
+  thing on each). Check the BR's own `ifconfig` before suspecting the node; a
+  BR that never came up looks the same from the node's side.
+
+- **`suit_worker: error getting manifest`, and a node cannot ping the CoAP
+  server, while `nib route` / `nib neigh` look perfect.** The server address is
+  inside the prefix the border router advertises. A node then treats it as
+  *on-link on the radio*, does neighbour discovery there, and never uses its
+  default route. Use the address the SLIP script puts on `sl0` —
+  **`fdea:dbee:f::1`** (`dist/tools/sliptty/start_network.sh`, `TUN_GLB`) —
+  which is outside `2001:db8::/64` and therefore routes properly via the BR.
+  Note the ethos guides legitimately use `2001:db8::1`: there the host is on the
+  *same link* as the node, with no router between them. Do not copy that address
+  into the border-router topology.
+
+- **Trailing garbage on the download URL** (`.../riot.suit.latest.bin\xef\xbf\xbd`
+  in the `suit_worker: downloading` line, then `error getting manifest`). The
+  example's `/suit/trigger` handler used to run `strlen()`/`"%s"` over
+  `pkt->payload`, but a CoAP payload is length-delimited and **not**
+  NUL-terminated, so it read past the end of the payload until it happened to
+  hit a zero byte. Whether it bit you depended on the URL's length, which is why
+  a short server address hid it and a longer one exposed it. Fixed in
+  `coap_handler.c` by passing `pkt->payload_len` through and logging with
+  `"%.*s"`. If you see this on an older image, reflash.
+
+- **`SUIT_COAP_SERVER` is frozen into the manifest URI at publish time.**
+  Changing the server address means republishing (with a fresh `APP_VER`), not
+  just restarting the file server.
+
+- **Intermittent, irreproducible SLIP breakage on a Pi 4.** `/dev/serial0`
+  defaults to the *mini-UART*, whose baud rate follows the VPU core clock and
+  drifts under frequency scaling. Set `dtoverlay=disable-bt` (plus
+  `enable_uart=1`, no serial console) so it resolves to `ttyAMA0`. This presents
+  as a flaky radio, not as a UART problem.
+
+- **`sliptty: Unknown packet type 0x75` + binary garbage = something else is on
+  the serial port.** sliptty lost SLIP frame sync because another process is
+  reading `/dev/serial0`. Almost always a login getty: note that
+  `dtoverlay=disable-bt` moves `serial0` from `ttyS0` to `ttyAMA0`, so
+  **`serial-getty@ttyAMA0` is the one that matters** — disabling only
+  `serial-getty@ttyS0` is the classic half-fix. Check with
+  `sudo fuser -v /dev/serial0`, and make sure `cmdline.txt` has no
+  `console=serial0,…`. The same cause, earlier in the sequence, makes the border
+  router's shell look unresponsive: the getty eats its output, so `ifconfig`
+  returns nothing and the board looks dead.
+
+- **OpenOCD 0.12's `DEPRECATED!` lines are noise, not failure.** `raspi.inc.mk`
+  still emits the pre-0.12 `bcm2835gpio_peripheral_base` / `bcm2835gpio_swd_nums`
+  spellings; 0.12 (Bookworm) warns about each and then honours them. Confirmed
+  on 0.12.0 with correct Pi 4 detection (`peripheral_base = 0xfe000000`). No
+  override, no older OpenOCD. Do use `OPENOCD_DEBUG_ADAPTER=raspi` rather than
+  the KW41Z-mini board file's `sysfs_gpio` default — *that* driver really was
+  removed in 0.12.
+
+- **`Error connecting DP: cannot read IDR` is usually electrical.** Confirm the
+  pin assignment first with
+  `make info-debug-variable-OPENOCD_ADAPTER_INIT ...` — `bcm2835gpio_swd_nums`
+  is `<SWCLK> <SWDIO>` in that order, and command-line `SWCLK_PIN`/`SWDIO_PIN`/
+  `SRST_PIN` override both the board file and `raspi.inc.mk` (which disagree
+  with each other: 20/21 vs 21/20 — the board file wins when neither is
+  overridden). Then check: pins claimed by another peripheral (`raspi-gpio get`
+  must show `INPUT`, not `ALT0`/`ALT4` — I²C owns GPIO2/3, SPI1 owns
+  GPIO16/20/21), a missing ground wire, BCM-number-vs-header-position confusion,
+  or a clock too fast for long dupont leads — retry with
+  `OPENOCD_EXTRA_INIT="-c 'adapter speed 100'"`.
+
+- **KW41Z-mini SWD pins are relocatable, but the overrides must be on every
+  OpenOCD command.** The defaults are GPIO16/20/21 (header pins 36/38/40). If
+  you move them, `SRST_PIN`/`SWCLK_PIN`/`SWDIO_PIN` have to be passed to
+  `flash` *and* `reset` — a `flash` that silently reverts to `num 16` while the
+  board is wired elsewhere looks exactly like a dead target. Prefer pins without
+  fixed pull-ups for the bidirectional SWDIO: GPIO2/GPIO3 carry
+  non-disableable 1.8 kΩ pull-ups (the I²C pins), fine for SRST or SWCLK but not
+  for data.
+
+- **A radio-mode dongle with no console output.** `DONGLE_NETIF=radio` must
+  still keep `stdio_cdc_acm` — the board has no UART-to-USB bridge, so without
+  it the dongle enumerates and runs with a completely silent stdio. The app
+  Makefile selects it unconditionally for this board; if you refactor that
+  block, keep `stdio_cdc_acm`, `usbus_dfu` and the `ROM_OFFSET`/`ROM_LEN`
+  pinning outside the networking branch, and verify `SLOT1_OFFSET` is unchanged
+  (`0x71800`) afterwards.
+
+- **samr21 PQ combinations are not automatically still feasible in mesh mode.**
+  The matrix in [DEVICE_SAMR21_XPRO.md](DEVICE_SAMR21_XPRO.md) was measured with
+  `stdio_ethos`; radio mode swaps that for `netdev_default` + 6LoWPAN and moves
+  the 32 KB budget. Re-measure a marginal row before trusting it, and watch for
+  the mute-shell symptom in [RAM limits](#ram-limits).
 
 ### Serial port contention (samr21)
 
