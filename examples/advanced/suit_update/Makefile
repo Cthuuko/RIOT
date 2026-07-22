@@ -249,6 +249,31 @@ else ifeq (nrf52840dongle,$(BOARD))
   USEMODULE += stdio_cdc_acm
   USEMODULE += gnrc_uhcpc
 
+  # The dongle's stock Nordic USB DFU bootloader cannot install riotboot (it
+  # protects the MBR at 0x0, where plain riotboot links), so SUIT OTA is flashed
+  # via RIOT's own riotboot_dfu bootloader instead (see
+  # HARDWARE_NRF52840_DONGLE_WSL.md). usbus_dfu is required on the app side for
+  # two reasons: it bumps RIOTBOOT_LEN so the slots line up with riotboot_dfu
+  # (SLOT0_OFFSET 0x4000, not the plain-riotboot 0x2000), and it gives the
+  # running firmware a DFU-runtime interface so dfu-util can re-flash a slot
+  # without re-entering the Nordic bootloader. Making it unconditional here keeps
+  # every build/publish slot-aligned (forgetting it on suit/publish would
+  # silently produce images the bootloader can't boot).
+  USEMODULE += usbus_dfu
+
+  # Pin the Nordic-bootloader flash geometry regardless of PROGRAMMER. The board
+  # file only sets ROM_OFFSET=0x1000 (clear the MBR) and ROM_LEN=0xdf000
+  # (preserve the top 128K Open bootloader) inside its `ifeq (nrfutil,PROGRAMMER)`
+  # block. But riotboot_dfu keeps the Nordic bootloader in place, and its slots
+  # are flashed with PROGRAMMER=dfu-util -- which would otherwise fall back to the
+  # CPU default ROM_LEN=0x100000 (full 1MB) and compute SLOT1_OFFSET=0x82000,
+  # while the default-PROGRAMMER `suit/publish` uses 0xdf000 -> SLOT1_OFFSET=
+  # 0x71800. The mismatch makes a fetched update fail the slot-offset condition
+  # (`offset does not match`, suit_parse res=-4). Pinning here forces publish and
+  # dfu-util flash to agree (and stops slot 1 overrunning the Open bootloader).
+  ROM_OFFSET ?= 0x1000
+  ROM_LEN ?= 0xdf000
+
   # IPv6 prefix delegated to the device over the CDC-ECM link
   IPV6_PREFIX ?= 2001:db8::/64
   TERMDEPS += host-tools
