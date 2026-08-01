@@ -72,7 +72,16 @@ the last alone consuming 4,664 B per its `-fstack-usage` output).
 
 ### 3.1 samr21-xpro — 32 KB RAM (the constrained case)
 
-All figures link-level, out of 32,768 B, **corrected 2026-07-20** (see §4).
+All figures link-level, out of 32,768 B, **corrected 2026-07-20** (see §4) and
+**re-confirmed 2026-07-23** by rebuilding all 20 combinations from a clean
+`BINDIR` — every previously published number reproduced exactly.
+
+These are **ethos-mode** figures. In 802.15.4 radio mode (`USE_ETHOS=0`) the
+budget shifts: ~1.6 KB less RAM used but ~12 KB more ROM, and since a samr21
+riotboot slot is only 128,768 B the **binding constraint becomes ROM**. Three
+combinations that fit over ethos (ML-DSA-44 + X25519, ML-DSA-44 + X25519 +
+payload, ML-DSA-65 + X25519) **overflow ROM** wirelessly. Full radio-mode
+matrix: [DEVICE_802154_PI.md](DEVICE_802154_PI.md#combination-matrix--radio-mode).
 
 | Signature | Manifest enc | Payload enc | RAM used | Verdict |
 |---|---|---|---|---|
@@ -81,14 +90,18 @@ All figures link-level, out of 32,768 B, **corrected 2026-07-20** (see §4).
 | Ed25519 | X25519 | X25519 | 21,552 B (11.2 KB spare) | ✅ links |
 | Ed25519 | ML-KEM-768 | ML-KEM-768 | 30,736 B (**2,032 B spare**) | ✅ links — best PQ-encryption option here |
 | Ed25519 | ML-KEM-1024 | ML-KEM-1024 | 32,720 B (**48 B spare**) | ✅ links, zero margin — one-off experiment only |
-| ML-DSA-44 | — | — | — | ✅ verified on hardware |
+| ML-DSA-44 | — | — | 30,760 B (2,008 B spare) | ✅ verified on hardware |
 | ML-DSA-44 | X25519 | X25519 | 31,280 B (1,488 B spare) | ✅ links |
 | ML-DSA-65 | — | — | 32,552 B (~216 B spare) | ✅ verified on hardware 2026-07-18 |
 | ML-DSA-65 | X25519 | — | 32,680 B (**88 B spare**) | ✅ links, runtime stability unproven |
 | ML-DSA-65 | X25519 | X25519 | overflow 308 B | ❌ — build with `SUIT_FIRMWARE_ENCRYPT=0` |
 | ML-DSA-44 | ML-KEM-768 | — | overflow 3,364 B | ❌ **confirmed infeasible** |
 | ML-DSA-44 | ML-KEM-768 | ML-KEM-768 | overflow 3,556 B | ❌ **confirmed infeasible** |
-| ML-DSA-87 | any | any | overflow 3,628 B (3,756 B with encryption) | ❌ never links |
+| ML-DSA-65 | ML-KEM-768 | ML-KEM-768 | overflow 6,324 B | ❌ **confirmed infeasible** |
+| ML-DSA-87 | — | — | overflow 3,628 B | ❌ never links |
+| ML-DSA-87 | X25519 | — | overflow 3,756 B | ❌ never links |
+| ML-DSA-87 | X25519 | X25519 | overflow 4,148 B | ❌ never links |
+| ML-DSA-87 | ML-KEM-1024 | ML-KEM-1024 | overflow 10,644 B | ❌ never links |
 
 The decryptor itself costs **+392 B RAM / +1,140 B text**. Manifest encryption
 costs ~17 KB of *flash* on native64 when enabled.
@@ -100,15 +113,19 @@ recommended PQ-encryption demo; `ML-DSA-44` (or `-65` with
 
 ### 3.2 nRF52840 Dongle — 256 KB RAM (the roomy case)
 
-RAM is not the constraint. Every combination is expected to build; if one
-overflows, suspect a configuration mistake, not the board. Verified so far:
+RAM is not the constraint. **All 20 combinations were built from a clean
+`BINDIR` on 2026-07-23 and every one links**, in both `cdc-ecm` and
+`DONGLE_NETIF=radio` mode. Worst case is ML-DSA-87 + ML-KEM-1024 at 47,236 B —
+**18 %** of the 262,144 B budget. If a build here overflows, suspect a
+configuration mistake, not the board.
 
 | Combination | Status |
 |---|---|
 | Ed25519 + plaintext manifest + X25519 payload | ✅ **full OTA verified 2026-07-22** — `payload decrypted (108028 bytes)`, `Running from slot 1` |
 | **ML-DSA-65 + ML-KEM-768 manifest + ML-KEM-768 payload (full PQ)** | ✅ **full OTA verified 2026-07-22** — manifest 4892 B → 3748 B, payload header 1126 B, `payload decrypted (124188 bytes)`, `Running from slot 1` |
-| ML-DSA-87 signing | 🔄 expected to fit, not yet exercised |
-| everything else | ✅ expected (RAM math), not individually run |
+| ML-DSA-87 signing | 🔨 **builds** (40,220 B RAM), runtime not yet exercised |
+| ML-DSA-87 + ML-KEM-1024 (max strength) | 🔨 **builds** (47,236 B RAM) |
+| everything else | 🔨 **builds** — link confirmed 2026-07-23, runtime not individually run |
 
 The dongle's reason to exist in this thesis: it demonstrates the
 **category-5 signature** and the **full post-quantum combination** that the
@@ -116,9 +133,10 @@ samr21 physically cannot build.
 
 ### 3.3 native / native64
 
-Effectively unconstrained (host RAM, large default thread stacks). Every
-combination has been exercised here, including the full-PQ combo that fails on
-samr21. Useful as the correctness reference; **not** a feasibility signal for
+Effectively unconstrained (host RAM, large default thread stacks). All 20
+combinations build (re-confirmed 2026-07-23), and the ones listed as ✅ in
+[DEVICE_NATIVE.md](DEVICE_NATIVE.md#combination-matrix--native--native64) have
+been exercised end to end, including the full-PQ combo that fails on samr21. Useful as the correctness reference; **not** a feasibility signal for
 real hardware — precisely the trap described in §4.
 
 Caveat: RAM storage regions on native are 2 KB, applied to the *plaintext*

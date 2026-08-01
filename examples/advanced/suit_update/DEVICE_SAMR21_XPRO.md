@@ -240,26 +240,37 @@ and use the matching key directory.
 Legend: ✅ verified on hardware · ⚠️ links but runtime unproven ·
 ❌ does not link
 
+**Every row was re-built from a clean `BINDIR` on 2026-07-23** (`ld` link
+status + `size` on `slot0.elf`); the RAM/overflow figures below are that
+sweep's output and reproduced the earlier numbers byte-for-byte.
+
+**These are ethos-mode figures.** In 802.15.4 radio mode (`USE_ETHOS=0`) the
+board uses ~1.6 KB less RAM but ~12 KB more ROM, and the 128,768 B riotboot
+slot becomes the binding limit — rows 8a, 9 and 11 stop fitting there. Separate
+matrix: [DEVICE_802154_PI.md](DEVICE_802154_PI.md#combination-matrix--radio-mode).
+
 | # | Signature | Manifest enc | Payload enc | Flags (flash **and** publish) | RAM | Verdict | Steps |
 |---|---|---|---|---|---|---|---|
-| 1 | Ed25519 | — | — | `SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0` | ~20.6 KB | ✅ **verified** | A–D, skip D.1 |
+| 1 | Ed25519 | — | — | `SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0` | 20,992 B (11.5 KB spare) | ✅ **verified** | A–D, skip D.1 |
 | 2 | Ed25519 | X25519 | — | `SUIT_FIRMWARE_ENCRYPT=0` | 21,160 B (11.6 KB spare) | ✅ **verified 2026-07-19** | A–D incl. D.1 |
-| 3 | Ed25519 | — | X25519 | `SUIT_MANIFEST_ENCRYPT=0` | — | ⚠️ links | A–D, skip D.1 |
+| 3 | Ed25519 | — | X25519 | `SUIT_MANIFEST_ENCRYPT=0` | 21,424 B (11.1 KB spare) | ⚠️ links | A–D, skip D.1 |
 | 4 | Ed25519 | X25519 | X25519 | *(none — the defaults)* | 21,552 B (11.2 KB spare) | ⚠️ links | A–D incl. D.1 |
-| 5 | Ed25519 | ML-KEM-768 | — | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768 SUIT_FIRMWARE_ENCRYPT=0` | 3,440 B spare | ⚠️ links | A–D incl. D.1† |
+| 5 | Ed25519 | ML-KEM-768 | — | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768 SUIT_FIRMWARE_ENCRYPT=0` | 29,328 B (3,440 B spare) | ⚠️ links | A–D incl. D.1† |
 | 6 | **Ed25519** | **ML-KEM-768** | **ML-KEM-768** | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 30,736 B (**2,032 B spare**) | ⚠️ links — **recommended PQ-encryption demo** | A–D incl. D.1† |
 | 7 | Ed25519 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | 32,720 B (**48 B spare**) | ⚠️ zero margin — one-off only | A–D incl. D.1† |
-| 8 | ML-DSA-44 | — | — | `SUIT_KEY_ALGO=ml-dsa-44` + both `=0` | — | ✅ **verified** | A–D, skip D.1 |
+| 8 | ML-DSA-44 | — | — | `SUIT_KEY_ALGO=ml-dsa-44` + both `=0` | 30,760 B (2,008 B spare) | ✅ **verified** | A–D, skip D.1 |
+| 8a | ML-DSA-44 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_FIRMWARE_ENCRYPT=0` | 30,888 B (1,880 B spare) | ⚠️ links | A–D incl. D.1 |
 | 9 | ML-DSA-44 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-44` | 31,280 B (1,488 B spare) | ⚠️ links | A–D incl. D.1 |
 | 10 | ML-DSA-65 | — | — | `SUIT_KEY_ALGO=ml-dsa-65` + both `=0` | 32,552 B (~216 B spare) | ✅ **verified 2026-07-18** | A–D, skip D.1 |
 | 11 | ML-DSA-65 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_FIRMWARE_ENCRYPT=0` | 32,680 B (**88 B spare**) | ⚠️ links, zero tolerance | A–D incl. D.1 |
 | 12 | ML-DSA-65 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-65` | **overflow 308 B** | ❌ — use #11 | — |
 | 13 | ML-DSA-44 | ML-KEM-768 | — | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | **overflow 3,364 B** | ❌ **infeasible** | — |
 | 14 | **ML-DSA-44** | **ML-KEM-768** | **ML-KEM-768** | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | **overflow 3,556 B** | ❌ **full PQ: infeasible** | — |
-| 15 | ML-DSA-44/65 | ML-KEM-1024 | any | `… SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | strictly worse than #14 | ❌ infeasible | — |
-| 16 | ML-DSA-65/87 | ML-KEM-any | any | — | worse than #14 | ❌ infeasible | — |
+| 15 | ML-DSA-65 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | **overflow 6,324 B** | ❌ infeasible | — |
+| 16 | ML-DSA-87 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | **overflow 10,644 B** | ❌ infeasible | — |
 | 17 | ML-DSA-87 | — | — | `SUIT_KEY_ALGO=ml-dsa-87` + both `=0` | **overflow 3,628 B** | ❌ never links | — |
-| 18 | ML-DSA-87 | any | any | — | **overflow 3,756 B+** | ❌ never links | — |
+| 18 | ML-DSA-87 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_FIRMWARE_ENCRYPT=0` | **overflow 3,756 B** | ❌ never links | — |
+| 19 | ML-DSA-87 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-87` | **overflow 4,148 B** | ❌ never links | — |
 
 † ML-KEM recipes: encrypt with `manifest-encryption-mlkem/encrypt_manifest.py
 --key $SUIT_KEY_DIR/device_mlkem768.pem` (or `…1024`). The app Makefile forces
@@ -276,7 +287,7 @@ nothing to pass.
   [nRF52840 Dongle](DEVICE_NRF52840_DONGLE.md).
 - **Row 6 is the samr21 PQ-encryption demo**; **rows 8/10 are the PQ-signature
   demos.**
-- **ML-DSA-87 never fits at all** (rows 17–18), at any encryption setting.
+- **ML-DSA-87 never fits at all** (rows 17–19), at any encryption setting.
   Key generation works; the link step is what fails, before anything reaches
   the board:
   ```

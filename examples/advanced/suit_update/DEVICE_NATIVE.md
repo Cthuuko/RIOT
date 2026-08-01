@@ -184,7 +184,13 @@ Native has no RAM ceiling, so this table is about **what has been exercised**,
 not what fits. Flags go on the **build** command (step 4); the manifest/payload
 encryption steps (6/7) are what you vary at publish time.
 
-Legend: ✅ verified here · 🔄 expected to work, not specifically run · ❌ blocked
+Legend: ✅ verified here (built **and** run) · 🔨 **builds** — clean link
+confirmed 2026-07-23, not run end-to-end · ❌ blocked
+
+**Every row below was built from a clean `BINDIR` on 2026-07-23 and all of them
+link.** On native that is a weak statement — there is no RAM ceiling — so the
+`Status` column still distinguishes what has actually been *exercised* from
+what merely compiles.
 
 | # | Signature | Manifest enc | Payload enc | Build flags | Status | Steps |
 |---|---|---|---|---|---|---|
@@ -198,12 +204,16 @@ Legend: ✅ verified here · 🔄 expected to work, not specifically run · ❌ 
 | 8 | ML-DSA-44 | — | — | `SUIT_KEY_ALGO=ml-dsa-44` + both `=0` | ✅ signature verify | 1–5, 8‡ |
 | 9 | ML-DSA-65 | — | — | `SUIT_KEY_ALGO=ml-dsa-65` + both `=0` | ✅ signature verify | 1–5, 8‡ |
 | 10 | ML-DSA-87 | — | — | `SUIT_KEY_ALGO=ml-dsa-87` + both `=0` | ✅ signature verify | 1–5, 8‡ |
-| 11 | ML-DSA-44 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-44` | 🔄 | all |
-| 12 | ML-DSA-65 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-65` | 🔄 | all |
-| 13 | ML-DSA-87 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-87` | 🔄 | all |
+| 11 | ML-DSA-44 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-44` | 🔨 builds | all |
+| 12 | ML-DSA-65 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-65` | 🔨 builds | all |
+| 13 | ML-DSA-87 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-87` | 🔨 builds | all |
 | 14 | **ML-DSA-44** | **ML-KEM-768** | **ML-KEM-768** | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | ✅ **full PQ** | all† |
-| 15 | ML-DSA-65 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 🔄 | all† |
-| 16 | ML-DSA-87 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | 🔄 max-strength | all† |
+| 15 | ML-DSA-65 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 🔨 builds | all† |
+| 16 | ML-DSA-87 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | 🔨 builds — max-strength | all† |
+| 17 | ML-DSA-44 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_FIRMWARE_ENCRYPT=0` | 🔨 builds | 1–6, 8, 9 |
+| 18 | ML-DSA-65 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_FIRMWARE_ENCRYPT=0` | 🔨 builds | 1–6, 8, 9 |
+| 19 | ML-DSA-87 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_FIRMWARE_ENCRYPT=0` | 🔨 builds | 1–6, 8, 9 |
+| 20 | ML-DSA-44 | ML-KEM-768 | — | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768 SUIT_FIRMWARE_ENCRYPT=0` | 🔨 builds | 1–6†, 8, 9 |
 
 † Use `manifest-encryption-mlkem/encrypt_manifest.py --key
 $SUIT_KEY_DIR/device_mlkem768.pem` (or `…1024`) in step 6.

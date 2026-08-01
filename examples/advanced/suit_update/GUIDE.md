@@ -140,6 +140,10 @@ Interesting corners of that space:
   **infeasible on the samr21-xpro (32 KB RAM), verified working on the
   nRF52840 Dongle (256 KB RAM)**.
 
+Side-by-side comparison of those three regimes — artifact sizes, RAM, ROM,
+threat model, workflow deltas, and which to pick:
+[**CRYPTO_TIERS.md**](CRYPTO_TIERS.md).
+
 ---
 
 ## 4. Pick your board
@@ -177,6 +181,7 @@ SETUP_COMMON.md     ← host prerequisites, keys, publish/notify — do this onc
 DEVICE_802154_PI.md ← mesh mode: same boards, wireless, Pi as CoAP server
 GOTCHAS.md          ← every known pitfall, grouped by symptom
 FINDINGS.md         ← measurements, feasibility, what was proven when
+CRYPTO_TIERS.md     ← classical vs hybrid vs full PQC, side by side
 ```
 
 Deeper references, unchanged from the implementation work:

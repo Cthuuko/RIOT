@@ -661,11 +661,85 @@ Run these in order; each one isolates a different layer.
   default route.
 - **Mini-UART not disabled** (Part A.3) shows up as intermittent,
   irreproducible SLIP breakage — not as a clean failure.
-- **samr21 RAM.** Swapping `stdio_ethos` for `netdev_default` + 6LoWPAN changes
-  the 32 KB budget, so the marginal PQ combinations in
-  [DEVICE_SAMR21_XPRO.md](DEVICE_SAMR21_XPRO.md)'s matrix are **not
-  automatically still valid here** — they were measured in ethos mode. Re-check
-  before relying on one, and watch for the mute-shell symptom (board boots,
+- **samr21 RAM *and* ROM.** Swapping `stdio_ethos` for `netdev_default` +
+  6LoWPAN changes both budgets, so the
+  [DEVICE_SAMR21_XPRO.md](DEVICE_SAMR21_XPRO.md) matrix does **not** carry over
+  — see the [radio-mode matrix](#combination-matrix--radio-mode) below, which
+  replaces it for this topology. Watch for the mute-shell symptom (board boots,
   prompt echoes, every `printf` empty) described in
-  [GOTCHAS.md](GOTCHAS.md#ram-limits). Ed25519 + X25519 (the default) verified
-  building in radio mode. The dongle's 256 KB is not at risk.
+  [GOTCHAS.md](GOTCHAS.md#ram-limits). The dongle's 256 KB is not at risk.
+
+---
+
+## Combination matrix — radio mode
+
+Measured 2026-07-23, every combination built from a clean `BINDIR` with
+`USE_ETHOS=0` (samr21) / `DONGLE_NETIF=radio` (dongle). Apply the flags to
+**both** the flash and the publish.
+
+### ❗ In radio mode the samr21's binding constraint is ROM, not RAM
+
+Dropping ethos for the 802.15.4 stack **frees ~1.6 KB of RAM but costs ~12 KB
+of ROM**, and a samr21 riotboot slot is only **128,768 B** (`SLOT0_LEN`
+0x1f800 minus the 256 B header). The result inverts several verdicts:
+
+- **Some ethos ❌ rows still fail, but for the opposite reason**, and some
+  ethos ✅ rows now fail. `ML-DSA-65 + X25519 manifest` fits in ethos mode
+  (88 B of RAM to spare) and **overflows ROM by 832 B here**.
+- **`ML-DSA-65` signature-only gains margin**: 30,984 B RAM in radio mode
+  versus 32,552 B in ethos, so the tightest verified PQ-signature row is
+  *more* comfortable wirelessly.
+- The Ed25519 + ML-KEM rows survive, but with **~1 KB of ROM spare** rather
+  than a RAM squeeze — anything that grows `.text` breaks them first.
+
+RAM out of **32,768 B**, ROM (`text`+`data`) out of **128,768 B**. Legend:
+🔨 links cleanly · ❌ does not link. **No row here has been run on hardware in
+radio mode yet** — these are link-time results only.
+
+| # | Signature | Manifest enc | Payload enc | Flags (add to `USE_ETHOS=0`) | RAM | ROM | Verdict |
+|---|---|---|---|---|---|---|---|
+| 1 | Ed25519 | — | — | `SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0` | 19,416 B | 106,552 B | 🔨 builds |
+| 2 | Ed25519 | X25519 | — | `SUIT_FIRMWARE_ENCRYPT=0` | 19,592 B | 115,388 B | 🔨 builds |
+| 3 | Ed25519 | — | X25519 | `SUIT_MANIFEST_ENCRYPT=0` | 19,856 B | 116,496 B | 🔨 builds |
+| 4 | **Ed25519** | **X25519** | **X25519** | *(none — the defaults)* | 19,984 B | 116,496 B | 🔨 builds — **the recommended mesh default** |
+| 5 | Ed25519 | ML-KEM-768 | — | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768 SUIT_FIRMWARE_ENCRYPT=0` | 27,760 B | 126,844 B | 🔨 builds (1,924 B ROM spare) |
+| 6 | Ed25519 | ML-KEM-768 | ML-KEM-768 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 29,168 B | 127,964 B | 🔨 builds — **804 B ROM spare** |
+| 7 | Ed25519 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | 31,152 B | 127,804 B | 🔨 builds — **964 B ROM / 1,616 B RAM spare** |
+| 8 | ML-DSA-44 | — | — | `SUIT_KEY_ALGO=ml-dsa-44` + both `=0` | 29,192 B | 118,032 B | 🔨 builds |
+| 9 | ML-DSA-44 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_FIRMWARE_ENCRYPT=0` | — | **ROM +224 B** | ❌ (fits in ethos mode) |
+| 10 | ML-DSA-44 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-44` | — | **ROM +1,344 B** | ❌ (fits in ethos mode) |
+| 11 | **ML-DSA-65** | — | — | `SUIT_KEY_ALGO=ml-dsa-65` + both `=0` | 30,984 B | 118,640 B | 🔨 builds — **roomier than ethos** |
+| 12 | ML-DSA-65 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_FIRMWARE_ENCRYPT=0` | — | **ROM +832 B** | ❌ (fits in ethos mode) |
+| 13 | ML-DSA-65 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-65` | — | **ROM +1,952 B** | ❌ |
+| 14 | ML-DSA-87 | — | — | `SUIT_KEY_ALGO=ml-dsa-87` + both `=0` | **RAM +2,060 B** | ok | ❌ |
+| 15 | ML-DSA-87 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_FIRMWARE_ENCRYPT=0` | **RAM +2,188 B** | **ROM +1,472 B** | ❌ |
+| 16 | ML-DSA-87 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-87` | **RAM +2,580 B** | **ROM +2,560 B** | ❌ |
+| 17 | ML-DSA-44 | ML-KEM-768 | — | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | **RAM +1,796 B** | **ROM +4,256 B** | ❌ |
+| 18 | ML-DSA-44 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | **RAM +1,988 B** | **ROM +5,376 B** | ❌ **full PQ: infeasible** |
+| 19 | ML-DSA-65 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | **RAM +4,756 B** | **ROM +5,984 B** | ❌ |
+| 20 | ML-DSA-87 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | **RAM +9,076 B** | **ROM +6,432 B** | ❌ |
+
+`+N B` = link-time overflow of that region by N bytes. Rows 9/10/12 are the
+new ones to know about: **they are feasible over ethos and infeasible over the
+radio**, purely on ROM. The thesis's central negative result (no PQ signature
+*and* PQ encryption on this board) holds in both modes, with the radio mode
+missing by even more.
+
+### nRF52840 Dongle — radio mode
+
+All 20 combinations build, exactly as in `cdc-ecm` mode. RAM out of 262,144 B;
+ROM per slot is `SLOT0_LEN` 0x6d800 = **448 KB**, never approached.
+
+| Combination | RAM | ROM |
+|---|---|---|
+| Ed25519, no encryption (lightest) | 23,936 B | 107,856 B |
+| Ed25519 + X25519 both (default) | 24,528 B | 117,064 B |
+| Ed25519 + ML-KEM-1024 both | 35,696 B | 128,124 B |
+| ML-DSA-65 + X25519 both | 36,056 B | 129,560 B |
+| **ML-DSA-65 + ML-KEM-768 both (full PQ)** | 42,064 B | 133,656 B |
+| ML-DSA-87 + ML-KEM-1024 both (max strength) | 46,384 B | 134,040 B |
+
+Radio mode is ~880 B *cheaper* in RAM than CDC-ECM here (no `usbus_cdc_ecm`,
+no `gnrc_uhcpc`) and ~1.2 KB more expensive in ROM. Neither matters at this
+scale — **the dongle is the board to use if you want post-quantum crypto on a
+mesh node.**

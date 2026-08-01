@@ -359,30 +359,43 @@ Watch the CDC-ACM terminal: fetch → decrypt → verify → write the inactive 
 256 KB RAM removes every constraint from the samr21 matrix. **Every ❌ there
 becomes ✅ here.** Apply flags to **both** the stage-2 flash and the publish.
 
-Legend: ✅ verified on hardware · 🔄 expected (RAM math), not individually run
+Legend: ✅ verified on hardware · 🔨 **builds** — clean link confirmed
+2026-07-23, runtime not individually run · 🔄 expected, not built
 
-| # | Signature | Manifest enc | Payload enc | Flags (flash **and** publish) | Status |
-|---|---|---|---|---|---|
-| 1 | Ed25519 | — | — | `SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0` | 🔄 |
-| 2 | Ed25519 | X25519 | — | `SUIT_FIRMWARE_ENCRYPT=0` | 🔄 |
-| 3 | **Ed25519** | **—** | **X25519** | `SUIT_MANIFEST_ENCRYPT=0` | ✅ **verified 2026-07-22** — full OTA, `payload decrypted (108028 bytes)`, `Running from slot 1` |
-| 4 | Ed25519 | X25519 | X25519 | *(none — the defaults)* | ✅ verified 2026-07-21 (manifest pass-through + encrypted payload) |
-| 5 | Ed25519 | ML-KEM-768 | ML-KEM-768 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 🔄 |
-| 6 | Ed25519 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | 🔄 |
-| 7 | ML-DSA-44 | — | — | `SUIT_KEY_ALGO=ml-dsa-44` + both `=0` | 🔄 |
-| 8 | ML-DSA-44 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-44` | 🔄 |
-| 9 | ML-DSA-65 | — | — | `SUIT_KEY_ALGO=ml-dsa-65` + both `=0` | 🔄 |
-| 10 | ML-DSA-65 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-65` | 🔄 |
-| 11 | **ML-DSA-87** | — | — | `SUIT_KEY_ALGO=ml-dsa-87` + both `=0` | 🔄 **fits here** (❌ on samr21) |
-| 12 | ML-DSA-87 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-87` | 🔄 fits here |
-| 13 | ML-DSA-44 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 🔄 (❌ on samr21) |
-| 14 | **ML-DSA-65** | **ML-KEM-768** | **ML-KEM-768** | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | ✅ **FULL PQ — verified 2026-07-22** |
-| 15 | ML-DSA-87 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | 🔄 maximum strength |
+**All 20 combinations were built from a clean `BINDIR` on 2026-07-23 and every
+one links.** RAM is link-level `data+bss` out of **262,144 B**; the worst case
+(row 20) uses 47,236 B — **18 %** of the budget. There is no combination this
+board cannot hold.
 
-Rows **11** and **14** are why this board is in the thesis: the **category-5
+| # | Signature | Manifest enc | Payload enc | Flags (flash **and** publish) | RAM | Status |
+|---|---|---|---|---|---|---|
+| 1 | Ed25519 | — | — | `SUIT_MANIFEST_ENCRYPT=0 SUIT_FIRMWARE_ENCRYPT=0` | 24,820 B | 🔨 builds |
+| 2 | Ed25519 | X25519 | — | `SUIT_FIRMWARE_ENCRYPT=0` | 24,988 B | 🔨 builds |
+| 3 | **Ed25519** | **—** | **X25519** | `SUIT_MANIFEST_ENCRYPT=0` | 25,252 B | ✅ **verified 2026-07-22** — full OTA, `payload decrypted (108028 bytes)`, `Running from slot 1` |
+| 4 | Ed25519 | X25519 | X25519 | *(none — the defaults)* | 25,380 B | ✅ verified 2026-07-21 (manifest pass-through + encrypted payload) |
+| 5 | Ed25519 | ML-KEM-768 | — | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768 SUIT_FIRMWARE_ENCRYPT=0` | 33,156 B | 🔨 builds |
+| 6 | Ed25519 | ML-KEM-768 | ML-KEM-768 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 34,564 B | 🔨 builds |
+| 7 | Ed25519 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | 36,548 B | 🔨 builds |
+| 8 | ML-DSA-44 | — | — | `SUIT_KEY_ALGO=ml-dsa-44` + both `=0` | 34,588 B | 🔨 builds |
+| 9 | ML-DSA-44 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_FIRMWARE_ENCRYPT=0` | 34,716 B | 🔨 builds |
+| 10 | ML-DSA-44 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-44` | 35,108 B | 🔨 builds |
+| 11 | ML-DSA-65 | — | — | `SUIT_KEY_ALGO=ml-dsa-65` + both `=0` | 36,380 B | 🔨 builds |
+| 12 | ML-DSA-65 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_FIRMWARE_ENCRYPT=0` | 36,508 B | 🔨 builds |
+| 13 | ML-DSA-65 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-65` | 36,900 B | 🔨 builds (❌ on samr21) |
+| 14 | **ML-DSA-87** | — | — | `SUIT_KEY_ALGO=ml-dsa-87` + both `=0` | 40,220 B | 🔨 **fits here** (❌ on samr21) |
+| 15 | ML-DSA-87 | X25519 | — | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_FIRMWARE_ENCRYPT=0` | 40,348 B | 🔨 builds (❌ on samr21) |
+| 16 | ML-DSA-87 | X25519 | X25519 | `SUIT_KEY_ALGO=ml-dsa-87` | 40,740 B | 🔨 builds (❌ on samr21) |
+| 17 | ML-DSA-44 | ML-KEM-768 | — | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 39,956 B | 🔨 builds (❌ on samr21) |
+| 18 | ML-DSA-44 | ML-KEM-768 | ML-KEM-768 | `SUIT_KEY_ALGO=ml-dsa-44 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 40,148 B | 🔨 builds (❌ on samr21) |
+| 19 | **ML-DSA-65** | **ML-KEM-768** | **ML-KEM-768** | `SUIT_KEY_ALGO=ml-dsa-65 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-768` | 42,916 B | ✅ **FULL PQ — verified 2026-07-22** |
+| 20 | ML-DSA-87 | ML-KEM-1024 | ML-KEM-1024 | `SUIT_KEY_ALGO=ml-dsa-87 SUIT_MANIFEST_ENCRYPT_ALGO=ml-kem-1024` | 47,236 B | 🔨 maximum strength — builds |
+
+Rows **14** and **19** are why this board is in the thesis: the **category-5
 signature** and the **full post-quantum combination** that the samr21 cannot
-build both fit comfortably in 256 KB — and row 14 is hardware-confirmed, not a
-RAM projection.
+build both fit comfortably in 256 KB — and row 19 is hardware-confirmed, not a
+RAM projection. Even the maximum-strength row 20 (ML-DSA-87 + ML-KEM-1024)
+leaves ~210 KB free, where the same combination overflows the samr21 by
+10,644 B.
 
 The app Makefile still forces the 9,216 B worker stack for any `ml-kem-*`
 build (needed for wolfCrypt's ML-KEM decapsulation) — automatic, nothing to
@@ -394,7 +407,7 @@ flags decide what is *produced*, plaintext always passes through.
 
 ---
 
-## Worked example — the full post-quantum combination (row 14)
+## Worked example — the full post-quantum combination (row 19)
 
 Verified end-to-end on real hardware, 2026-07-22.
 
