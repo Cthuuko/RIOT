@@ -794,6 +794,18 @@ class COSETagChoice(SUITManifestDict):
         return self
 
 
+    def to_json(self):
+        # A tag choice only ever has the one alternative that from_suit()
+        # matched set as an attribute, so the inherited to_json()'s
+        # unconditional getattr() over every field raises AttributeError.
+        # Emit just the alternative that is present, keyed by its tag name.
+        j = OrderedDict()
+        for k, f in self.fields.items():
+            v = getattr(self, k, None)
+            if v:
+                j[f.json_key] = v.to_json()
+        return j
+
     def to_debug(self, indent):
         s = ''
         for k, f in self.fields.items():

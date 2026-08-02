@@ -24,6 +24,9 @@ endif
 ifneq (,$(filter libcose_crypt_wolfcrypt_mldsa,$(USEMODULE)))
   CFLAGS += -DCRYPTO_WOLFCRYPT_MLDSA
 endif
+ifneq (,$(filter libcose_crypt_wolfcrypt_ecdsa,$(USEMODULE)))
+  CFLAGS += -DCRYPTO_WOLFCRYPT_ECDSA
+endif
 ifneq (,$(filter libcose_crypt_init,$(USEMODULE)))
   DIRS += $(RIOTBASE)/pkg/libcose/init
 endif
@@ -34,4 +37,5 @@ PSEUDOMODULES += libcose_crypt_hacl
 PSEUDOMODULES += libcose_crypt_tinycrypt
 PSEUDOMODULES += libcose_crypt_monocypher
 PSEUDOMODULES += libcose_crypt_wolfcrypt_mldsa
+PSEUDOMODULES += libcose_crypt_wolfcrypt_ecdsa
 PSEUDOMODULES += auto_init_libcose_crypt

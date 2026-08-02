@@ -40,6 +40,15 @@ QUIET ?= 1
 USEMODULE += suit suit_transport_coap
 USEMODULE += nanocoap_server_auto_init
 
+# SUIT_KEY_ALGO=es256/es384/es512 selects on-device ECDSA verification over
+# the matching NIST curve (COSE -7/-35/-36). Same "must be selected before
+# dependency resolution" rule as ML-DSA below. No SUIT_MANIFEST_BUFSIZE bump
+# is needed: ECDSA signatures are 64/96/132 B, all well inside the 640 B
+# default sized for Ed25519's 64 B.
+ifneq (,$(filter es256 es384 es512,$(SUIT_KEY_ALGO)))
+  USEMODULE += suit_algo_$(SUIT_KEY_ALGO)
+endif
+
 # SUIT_KEY_ALGO=ml-dsa-44/-65/-87 selects on-device ML-DSA verification for
 # that FIPS 204 parameter set (must be added to USEMODULE before dependency
 # resolution runs in Makefile.include, so this can't live in the

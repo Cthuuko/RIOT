@@ -35,11 +35,24 @@ import logging
 import binascii
 LOG = logging.getLogger(__name__)
 
+# RFC 9053 pairs each ECDSA algorithm with a specific hash: ES256/SHA-256 on
+# P-256, ES384/SHA-384 on P-384, ES512/SHA-512 on P-521. Keyed by key_type
+# rather than by curve size so ES512 (P-521, a 521-bit curve) lands correctly.
+ES_HASHES = {
+    'ES256' : hashes.SHA256,
+    'ES384' : hashes.SHA384,
+    'ES512' : hashes.SHA512,
+}
+
 def get_cose_es_bytes(options, private_key, sig_val):
-    ASN1_signature = private_key.sign(sig_val, ec.ECDSA(hashes.SHA256()))
+    ASN1_signature = private_key.sign(
+        sig_val, ec.ECDSA(ES_HASHES[options.key_type]()))
     r,s = asymmetric_utils.decode_dss_signature(ASN1_signature)
-    ssize = private_key.key_size
-    signature_bytes = r.to_bytes(ssize//8, byteorder='big') + s.to_bytes(ssize//8, byteorder='big')
+    # COSE wants fixed-width r||s, each padded to the curve's field size in
+    # whole bytes. P-521's 521 bits round *up* to 66 bytes - key_size//8 would
+    # yield 65 and produce a signature the verifier rejects.
+    ssize = (private_key.key_size + 7) // 8
+    signature_bytes = r.to_bytes(ssize, byteorder='big') + s.to_bytes(ssize, byteorder='big')
     return signature_bytes
 
 def get_cose_raw_sign_bytes(options, private_key, sig_val):
@@ -63,7 +76,18 @@ def main(options):
     try:
         private_key = ks.load_pem_private_key(private_key_buffer, password=str.encode(options.password) if options.password else None, backend=default_backend())
         if isinstance(private_key, ec.EllipticCurvePrivateKey):
-            options.key_type = 'ES{}'.format(private_key.key_size)
+            # P-521 signs with SHA-512, so its COSE name is ES512, not the
+            # 'ES521' a plain key_size format would produce (which matches no
+            # entry in any table below and fails with a NoneType call).
+            options.key_type = {
+                256 : 'ES256',
+                384 : 'ES384',
+                521 : 'ES512',
+            }.get(private_key.key_size)
+            if options.key_type is None:
+                LOG.critical('Unsupported EC curve size: {}'.format(
+                    private_key.key_size))
+                return 1
         elif isinstance(private_key, ed25519.Ed25519PrivateKey):
             options.key_type = 'EdDSA'
         elif isinstance(private_key, mldsa.MLDSA44PrivateKey):

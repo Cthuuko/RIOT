@@ -24,6 +24,13 @@ ifneq (,$(filter libcose_crypt_wolfcrypt_mldsa,$(USEMODULE)))
   USEMODULE += wolfcrypt
   USEMODULE += wolfcrypt_mldsa
 endif
+ifneq (,$(filter libcose_crypt_wolfcrypt_ecdsa,$(USEMODULE)))
+  USEPKG += wolfssl
+  USEMODULE += wolfcrypt
+  USEMODULE += wolfcrypt_ecc
+  # curve selection (wolfcrypt_ecc_p384 / _p521) is added by the caller, see
+  # sys/suit/Makefile.dep - P-256 is wolfCrypt's baseline and always present
+endif
 
 DEFAULT_MODULE += libcose_crypt_init
 DEFAULT_MODULE += auto_init_libcose_crypt

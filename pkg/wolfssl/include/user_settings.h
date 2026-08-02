@@ -262,11 +262,26 @@ int strncasecmp(const char *s1, const char * s2, size_t sz);
 #undef HAVE_ECC
 #ifdef MODULE_WOLFCRYPT_ECC
 #define HAVE_ECC
-#define FP_ECC
-#define WOLFSSL_HAVE_SP_ECC
 #define WOLFSSL_HAVE_SP_ECC
 #define ECC_TIMING_RESISTANT
 #define HAVE_SUPPORTED_CURVES
+/* Without ECC_USER_CURVES wolfCrypt falls back to HAVE_ALL_CURVES and
+ * compiles every curve from secp112r1 up, which also pushes MAX_ECC_BITS
+ * (and with it every embedded mp_int in an ecc_key) to 521 bits. Opt in per
+ * curve instead: P-256 is the baseline, the larger two ride on their own
+ * pseudomodules so an ES256-only build doesn't pay for them. */
+#define ECC_USER_CURVES
+#define HAVE_ECC256
+#ifdef MODULE_WOLFCRYPT_ECC_P384
+#define HAVE_ECC384
+#endif
+#ifdef MODULE_WOLFCRYPT_ECC_P521
+#define HAVE_ECC521
+#endif
+/* FP_ECC deliberately left off: the fixed-point accelerator caches
+ * precomputed multiples of the base point in a static table sized for the
+ * largest curve, which is pure overhead for SUIT's one-signature-per-update
+ * verify workload on a 32KB-RAM board. */
 #endif
 
 #undef HAVE_BLAKE2B

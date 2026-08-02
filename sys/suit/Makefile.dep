@@ -10,6 +10,19 @@ ifneq (,$(filter suit_algo_mldsa%,$(USEMODULE)))
   USEMODULE += $(patsubst suit_algo_%,wolfcrypt_%,$(filter suit_algo_mldsa%,$(USEMODULE)))
 endif
 
+# ECDSA over the NIST curves (COSE ES256/ES384/ES512). One backend covers all
+# three; the curve pseudomodules trim which ones wolfCrypt compiles in.
+ifneq (,$(filter suit_algo_es%,$(USEMODULE)))
+  USEMODULE += libcose_crypt_wolfcrypt_ecdsa
+  ifneq (,$(filter suit_algo_es384,$(USEMODULE)))
+    USEMODULE += wolfcrypt_ecc_p384
+  endif
+  ifneq (,$(filter suit_algo_es512,$(USEMODULE)))
+    # ES512 is P-521, not a 512-bit curve
+    USEMODULE += wolfcrypt_ecc_p521
+  endif
+endif
+
 ifeq (,$(filter libcose_crypt_%,$(USEMODULE)))
   USEMODULE += libcose_crypt_c25519
 endif

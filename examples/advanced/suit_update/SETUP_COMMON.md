@@ -187,6 +187,24 @@ with "no". Requires the §1.4 prerequisites.
 | Signature | 64 B | 2420 B | 3309 B | 4627 B |
 | `SUIT_MANIFEST_BUFSIZE` (auto) | 640 | 3072 | 3840 | 5376 |
 
+The classical ECDSA levels, for comparison — all three stay inside the default
+640 B manifest buffer, so none of them needs a bump:
+
+| | ES256 | ES384 | ES512 |
+|---|---|---|---|
+| Curve | P-256 | P-384 | **P-521** (not "P-512") |
+| Security category | — (classical) | — (classical) | — (classical) |
+| COSE algorithm ID | −7 | −35 | −36 |
+| Hash (RFC 9053) | SHA-256 | SHA-384 | SHA-512 |
+| Public key (x‖y) | 64 B | 96 B | 132 B |
+| Signature (r‖s) | 64 B | 96 B | 132 B |
+| `SUIT_MANIFEST_BUFSIZE` (auto) | 640 | 640 | 640 |
+
+> **ES512 signs on P-521.** The COSE name follows the hash (SHA-512), not the
+> curve. Its 521-bit coordinates occupy **66** bytes each, rounding up — a
+> 65-byte assumption (`key_size // 8`) produces signatures every verifier
+> rejects.
+
 The app `Makefile` sets the buffer size for you from `SUIT_KEY_ALGO`; you
 never pass it by hand.
 

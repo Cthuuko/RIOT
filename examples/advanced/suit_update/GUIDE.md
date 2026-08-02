@@ -127,7 +127,7 @@ Make variables (**defaults in bold**):
 
 | Axis | Variable | Choices |
 |---|---|---|
-| Signature | `SUIT_KEY_ALGO` | **`ed25519`** · `ml-dsa-44` · `ml-dsa-65` · `ml-dsa-87` |
+| Signature | `SUIT_KEY_ALGO` | **`ed25519`** · `es256` · `es384` · `es512` · `ml-dsa-44` · `ml-dsa-65` · `ml-dsa-87` |
 | Manifest encryption | `SUIT_MANIFEST_ENCRYPT` (+`_ALGO`) | **`1`**/`0`; **`x25519`** · `ml-kem-768` · `ml-kem-1024` |
 | Payload encryption | `SUIT_FIRMWARE_ENCRYPT` | **`1`**/`0` (reuses the manifest `_ALGO` + device key) |
 
@@ -182,6 +182,7 @@ DEVICE_802154_PI.md ← mesh mode: same boards, wireless, Pi as CoAP server
 GOTCHAS.md          ← every known pitfall, grouped by symptom
 FINDINGS.md         ← measurements, feasibility, what was proven when
 CRYPTO_TIERS.md     ← classical vs hybrid vs full PQC, side by side
+CRYPTO_OPERATIONS.md ← per crypto step: the command, the source file, per algorithm
 ```
 
 Deeper references, unchanged from the implementation work:
@@ -194,6 +195,7 @@ Deeper references, unchanged from the implementation work:
 | [MLKEM_ENCRYPTION_PLAN.md](MLKEM_ENCRYPTION_PLAN.md) / [CHANGES](MLKEM_ENCRYPTION_CHANGES.md) | ML-KEM variant |
 | [FIRMWARE_ENCRYPTION_PLAN.md](FIRMWARE_ENCRYPTION_PLAN.md) / [CHANGES](FIRMWARE_ENCRYPTION_CHANGES.md) | streaming payload encryption |
 | [manifest-encryption/](manifest-encryption/README.md), [manifest-encryption-mlkem/](manifest-encryption-mlkem/README.md), [firmware-encryption/](firmware-encryption/README.md) | standalone host-only interop demos + the COSE wire formats |
+| [CRYPTO_OPERATIONS.md](CRYPTO_OPERATIONS.md) | keygen / manifest-gen / sign / encrypt / decrypt / verify: the exact command and the exact source location for each, per algorithm, plus annotated JSON manifest examples |
 | [README.native.md](README.native.md), [README.hardware.md](README.hardware.md) | upstream RIOT's original walkthroughs (classical Ed25519 only) |
 
 ---

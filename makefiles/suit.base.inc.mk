@@ -14,17 +14,32 @@ SUIT_TOOL ?= $(RIOTBASE)/dist/tools/suit/suit-manifest-generator/bin/suit-tool
 # If the firmware accepts multiple keys, let the first key be the signing key.
 SUIT_KEY ?= default
 SUIT_KEY_SIGN ?= $(word 1, $(SUIT_KEY))
-# Algorithm passed to `openssl genpkey -algorithm ...` when generating a new
-# signing key, e.g. ml-dsa-44 / ml-dsa-65 / ml-dsa-87 for post-quantum
-# ML-DSA signatures (requires OpenSSL 3.5+). All keys in SUIT_KEY must use
-# the same algorithm.
+# Signature algorithm, e.g. ed25519 (default), es256 / es384 / es512 for
+# ECDSA over the NIST curves, or ml-dsa-44 / ml-dsa-65 / ml-dsa-87 for
+# post-quantum ML-DSA signatures (requires OpenSSL 3.5+). All keys in
+# SUIT_KEY must use the same algorithm.
 SUIT_KEY_ALGO ?= ed25519
+
+# ECDSA is one OpenSSL algorithm ("ec") parameterized by a curve, unlike
+# ed25519/ml-dsa-XX where the algorithm name is the whole story - so the name
+# passed to `openssl genpkey -algorithm ...` is derived rather than being
+# SUIT_KEY_ALGO verbatim.
+SUIT_KEY_EC_CURVE = $(strip \
+    $(if $(filter es256,$(SUIT_KEY_ALGO)),P-256) \
+    $(if $(filter es384,$(SUIT_KEY_ALGO)),P-384) \
+    $(if $(filter es512,$(SUIT_KEY_ALGO)),P-521))
+SUIT_KEY_GENPKEY_ALGO ?= $(if $(SUIT_KEY_EC_CURVE),ec,$(SUIT_KEY_ALGO))
+
 # OpenSSL 3.5+ defaults to writing ML-DSA private keys with both the FIPS 204
 # seed *and* the expanded secret key in a combined ASN.1 CHOICE ("seed-priv"
 # format). Python's `cryptography` (used by suit-tool) can't currently parse
 # that combined form - force seed-only output, which it does support. This
 # provparam is silently ignored for non-ML-DSA algorithms.
-SUIT_KEY_GENPKEY_ARGS ?= $(if $(filter ml-dsa-%,$(SUIT_KEY_ALGO)),-provparam ml-dsa.output_formats=seed-only)
+# For ECDSA, `-algorithm ec` needs the curve naming which parameter set to use;
+# note ES512 uses P-521 (a 521-bit curve), not a "P-512" that doesn't exist.
+SUIT_KEY_GENPKEY_ARGS ?= \
+    $(if $(filter ml-dsa-%,$(SUIT_KEY_ALGO)),-provparam ml-dsa.output_formats=seed-only) \
+    $(if $(SUIT_KEY_EC_CURVE),-pkeyopt ec_paramgen_curve:$(SUIT_KEY_EC_CURVE))
 
 # ML-DSA needs on-device verification support (sys/suit's
 # suit_algo_mldsa44/65/87 modules, wired to a wolfCrypt-backed libcose
@@ -74,10 +89,10 @@ $(SUIT_SEC): | $(CLEAN)
 	if [ -z "$(RIOT_CI_BUILD)" ]; then read encryption; else encryption=0; fi;	\
 	case $$encryption in								\
 		0)									\
-			openssl genpkey -algorithm $(SUIT_KEY_ALGO) $(SUIT_KEY_GENPKEY_ARGS) -out $@;		\
+			openssl genpkey -algorithm $(SUIT_KEY_GENPKEY_ALGO) $(SUIT_KEY_GENPKEY_ARGS) -out $@;		\
 			;;								\
 		1)									\
-			openssl genpkey -algorithm $(SUIT_KEY_ALGO) $(SUIT_KEY_GENPKEY_ARGS) -aes-256-cbc -out $@ || :;	\
+			openssl genpkey -algorithm $(SUIT_KEY_GENPKEY_ALGO) $(SUIT_KEY_GENPKEY_ARGS) -aes-256-cbc -out $@ || :;	\
 			;;								\
 		*)									\
 			echo "Invalid choice";						\

@@ -20,6 +20,15 @@ ifneq (,$(filter wolfcrypt_ed25519,$(USEMODULE)))
   USEMODULE += wolfcrypt_sha512
 endif
 
+# ES384/ES512 hash with SHA-384/SHA-512, which live behind their own module
+# (see user_settings.h) - same pattern as wolfcrypt_ed25519 above. The curve
+# submodules intentionally map to no source file: ecc_p384.c does not exist,
+# and Makefile.base's submodule SRC uses $(wildcard), so they act purely as
+# compile-time curve selectors for user_settings.h.
+ifneq (,$(filter wolfcrypt_ecc_p384 wolfcrypt_ecc_p521,$(USEMODULE)))
+  USEMODULE += wolfcrypt_sha512
+endif
+
 ifneq (,$(filter wolfcrypt_mldsa,$(USEMODULE)))
   USEMODULE += wolfcrypt_sha3
   USEMODULE += wolfcrypt_asn

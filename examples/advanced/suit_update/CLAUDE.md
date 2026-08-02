@@ -40,6 +40,7 @@ board/driver code.
 | **`DEVICE_802154_PI.md`** | **E2E reference — mesh mode**: both real boards as untethered 802.15.4 nodes, Raspberry Pi 4 as CoAP server + notifier, openlabs KW41Z-mini as SLIP border router. Pi 4 host setup (image, headless SSH, mini-UART, OpenOCD 0.12), GPIO wiring table, `DONGLE_NETIF=radio` |
 | **`GOTCHAS.md`** | **All pitfalls**, grouped by symptom, with a symptom→section lookup table |
 | **`FINDINGS.md`** | **All measurements/feasibility/status**: per-board RAM tables, the wolfCrypt ML-KEM heap discovery, hardware-only findings, open items |
+| **`CRYPTO_OPERATIONS.md`** | **Per-operation command + code-location reference**: signing/device keygen, manifest generation, signing, manifest & payload encryption (host); manifest decryption, signature verification, streaming payload decryption (device). Per-algorithm tables for all 7 signature and 3 KEM schemes, measured artifact/overhead sizes, and real `suit-tool parse -j` JSON manifest examples (EdDSA + ML-DSA-65) |
 | `NATIVE_SETUP.md`, `HARDWARE_SAMR21_WSL.md`, `SAMR21_EXAMPLES.md`, `HARDWARE_NRF52840_DONGLE_WSL.md` | Retired — one-line redirect stubs pointing at the `DEVICE_*.md` successors |
 | `MANIFEST_ENCRYPTION_PLAN.md` | Manifest-encryption feature plan + status checklist — resume work from the first unchecked step |
 | `MANIFEST_ENCRYPTION_CHANGES.md` | Manifest-encryption code-change summary: wire format, opt-out contract, per-file change list, verification results, gotchas |

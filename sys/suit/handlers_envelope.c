@@ -32,6 +32,21 @@
 #include "suit/handlers.h"
 #include "suit.h"
 
+#if IS_USED(MODULE_SUIT_ALGO_ES256)
+#define SUIT_ES_COSE_CURVE  COSE_EC_CURVE_P256
+#define SUIT_ES_COSE_ALGO   COSE_ALGO_ES256
+#define SUIT_ES_COORD_LEN   32
+#elif IS_USED(MODULE_SUIT_ALGO_ES384)
+#define SUIT_ES_COSE_CURVE  COSE_EC_CURVE_P384
+#define SUIT_ES_COSE_ALGO   COSE_ALGO_ES384
+#define SUIT_ES_COORD_LEN   48
+#elif IS_USED(MODULE_SUIT_ALGO_ES512)
+/* ES512 signs on P-521, whose 521-bit coordinates occupy 66 bytes */
+#define SUIT_ES_COSE_CURVE  COSE_EC_CURVE_P521
+#define SUIT_ES_COSE_ALGO   COSE_ALGO_ES512
+#define SUIT_ES_COORD_LEN   66
+#endif
+
 bool suit_get_public_key(uint8_t idx, cose_key_t *pkey)
 {
     if (idx >= ARRAY_SIZE(public_key)) {
@@ -52,6 +67,16 @@ bool suit_get_public_key(uint8_t idx, cose_key_t *pkey)
     /* curve argument is unused for non-EC key types, see cose_key_set_keys() */
     cose_key_set_keys(pkey, COSE_EC_CURVE_ED25519, COSE_ALGO_MLDSA87,
                       (void *)public_key[idx], NULL, NULL);
+#elif IS_USED(MODULE_SUIT_ALGO_ES256) || IS_USED(MODULE_SUIT_ALGO_ES384) || \
+      IS_USED(MODULE_SUIT_ALGO_ES512)
+    /* Unlike the cases above, the curve is *not* a dummy here: it is what
+     * makes cose_key_set_keys() mark the key as COSE_KTY_EC2, and the
+     * backend reads it back to pick the coordinate width and hash.
+     * dist/tools/suit/pubkey_to_header.py stores the affine coordinates
+     * concatenated as x||y, so y starts at half the entry length. */
+    cose_key_set_keys(pkey, SUIT_ES_COSE_CURVE, SUIT_ES_COSE_ALGO,
+                      (void *)public_key[idx],
+                      (void *)(public_key[idx] + SUIT_ES_COORD_LEN), NULL);
 #else
     cose_key_set_keys(pkey, COSE_EC_CURVE_ED25519, COSE_ALGO_EDDSA,
                       (void *)public_key[idx], NULL, NULL);

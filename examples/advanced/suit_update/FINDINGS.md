@@ -50,6 +50,36 @@ bottom; this is the curated summary the device matrices are derived from.
 A signature grows **~50×** going from Ed25519 to ML-DSA-65, and the manifest
 buffer with it. On a 32 KB device the buffer alone is >10 % of RAM.
 
+### Classical ECDSA (ES256/ES384/ES512) — the interop baseline
+
+Added after the PQ work, so the classical column is not carried by Ed25519
+alone. Verified on samr21-xpro, clean `BINDIR`, encryption off, out of
+32,768 B RAM / 128,768 B ROM:
+
+| | Ed25519 | ES256 | ES384 | ES512 |
+|---|---|---|---|---|
+| Curve | Curve25519 | P-256 | P-384 | P-521 |
+| COSE algorithm ID | −8 | −7 | −35 | −36 |
+| Public key | 32 B | 64 B | 96 B | 132 B |
+| Signature | 64 B | 64 B | 96 B | 132 B |
+| samr21 RAM | — | 21,368 B | 21,368 B | 21,368 B |
+| samr21 ROM | — | 100,800 B | 104,960 B | 105,208 B |
+
+Two results worth recording:
+
+1. **RAM is identical across all three curves.** The static `ecc_key` measures
+   **332 B whatever the curve** — wolfCrypt's SP math fixes the `mp_int` width
+   globally rather than from `MAX_ECC_BITS`, so selecting P-521 over P-256 buys
+   no extra `.bss`. Confirmed with clean rebuilds, not incremental ones.
+2. **Only ROM moves**: +4,160 B for P-384 and +4,408 B for P-521 over P-256,
+   which is curve tables and code. So on the ROM-bound radio-mode samr21 the
+   curve choice matters and on the RAM-bound ethos build it does not — the
+   mirror image of the ML-DSA situation.
+
+`ECC_USER_CURVES` is set so an ES256 build does not compile every curve from
+secp112r1 up (`user_settings.h`); `FP_ECC` is deliberately left off, since its
+precomputation cache is dead weight for one verify per update.
+
 ### Key establishment (FIPS 203)
 
 | Scheme | Container overhead per manifest |
