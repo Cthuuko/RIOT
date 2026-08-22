@@ -182,8 +182,20 @@ DEVICE_802154_PI.md ← mesh mode: same boards, wireless, Pi as CoAP server
 GOTCHAS.md          ← every known pitfall, grouped by symptom
 FINDINGS.md         ← measurements, feasibility, what was proven when
 CRYPTO_TIERS.md     ← classical vs hybrid vs full PQC, side by side
-CRYPTO_OPERATIONS.md ← per crypto step: the command, the source file, per algorithm
+CRYPTO_OPERATIONS.md ← per crypto step (incl. the firmware build): the command,
+                       the source file, per algorithm
+PERFORMANCE.md      ← the instrument: SUIT_PERF=1 (device), SUIT_HOST_PERF=1 (host)
+├── PERF_RESULTS_NRF52840.md   ← device: verify, decapsulate, decrypt
+├── PERF_RESULTS_HOST.md       ← host: sign, encapsulate, encrypt
+└── PERF_RUNBOOK_NRF52840.md   ← how to capture a device run, per tier
 ```
+
+**The tiers measure differently at each end**, which is the point of having
+both results documents: on the device, post-quantum signature verification is
+the *cheapest* option and Ed25519 the dearest; on the build host, ML-DSA
+signing is the *dearest*. Everything expensive about PQC lands on the producer,
+which can afford it — see
+[PERF_RESULTS_HOST.md](PERF_RESULTS_HOST.md)'s headline.
 
 Deeper references, unchanged from the implementation work:
 
@@ -195,7 +207,7 @@ Deeper references, unchanged from the implementation work:
 | [MLKEM_ENCRYPTION_PLAN.md](MLKEM_ENCRYPTION_PLAN.md) / [CHANGES](MLKEM_ENCRYPTION_CHANGES.md) | ML-KEM variant |
 | [FIRMWARE_ENCRYPTION_PLAN.md](FIRMWARE_ENCRYPTION_PLAN.md) / [CHANGES](FIRMWARE_ENCRYPTION_CHANGES.md) | streaming payload encryption |
 | [manifest-encryption/](manifest-encryption/README.md), [manifest-encryption-mlkem/](manifest-encryption-mlkem/README.md), [firmware-encryption/](firmware-encryption/README.md) | standalone host-only interop demos + the COSE wire formats |
-| [CRYPTO_OPERATIONS.md](CRYPTO_OPERATIONS.md) | keygen / manifest-gen / sign / encrypt / decrypt / verify: the exact command and the exact source location for each, per algorithm, plus annotated JSON manifest examples |
+| [CRYPTO_OPERATIONS.md](CRYPTO_OPERATIONS.md) | keygen / firmware build / manifest-gen / sign / encrypt / decrypt / verify: the exact command and the exact source location for each, per algorithm, plus annotated JSON manifest examples |
 | [README.native.md](README.native.md), [README.hardware.md](README.hardware.md) | upstream RIOT's original walkthroughs (classical Ed25519 only) |
 
 ---
