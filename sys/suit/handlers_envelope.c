@@ -30,6 +30,7 @@
 #include "public_key.h"
 #include "suit/conditions.h"
 #include "suit/handlers.h"
+#include "suit/perf.h"
 #include "suit.h"
 
 #if IS_USED(MODULE_SUIT_ALGO_ES256)
@@ -132,9 +133,15 @@ static int _verify_with_key(suit_manifest_t *manifest, const nanocbor_value_t *i
                 return SUIT_ERR_INVALID_MANIFEST;
             }
             LOG_INFO("suit: verifying manifest signature\n");
+            suit_perf_begin(SUIT_PERF_SIG_VERIFY);
             int verification = cose_sign_verify(&verify, &signature,
                                                 pkey, manifest->validation_buf,
                                                 SUIT_COSE_BUF_SIZE);
+            suit_perf_end(SUIT_PERF_SIG_VERIFY);
+            suit_perf_stack_sample(SUIT_PERF_SIG_VERIFY);
+            /* the COSE_Sign1 object carrying the tier's signature: 64 B for
+             * Ed25519, 2420/3309/4627 B for ML-DSA-44/65/87 */
+            suit_perf_count(SUIT_PERF_SIG_VERIFY, cose_len);
             if (verification == 0) {
                 manifest->state |= SUIT_STATE_COSE_AUTHENTICATED;
                 res = SUIT_OK;
@@ -190,7 +197,10 @@ static int _manifest_handler(suit_manifest_t *manifest, int key,
          * length
          */
     { 0x82, 0x02, 0x58, SHA256_DIGEST_LENGTH };
+    suit_perf_begin(SUIT_PERF_MFST_DIGEST);
     sha256(manifest_buf, manifest_len, digest_struct + 4);
+    suit_perf_end(SUIT_PERF_MFST_DIGEST);
+    suit_perf_count(SUIT_PERF_MFST_DIGEST, manifest_len);
 
     /* The COSE payload and the sha256 of the manifest itself is public info and
      * verification does not depend on secret info. No need for cryptographic

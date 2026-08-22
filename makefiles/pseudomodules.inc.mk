@@ -494,6 +494,10 @@ PSEUDOMODULES += suit_algo_%
 # suit_manifest_encrypt module dir (sys/suit/encrypt/payload_decrypt.c),
 # gated by this pseudomodule's MODULE_ define
 PSEUDOMODULES += suit_firmware_encrypt
+# opt-in performance/memory checkpoints along the update path: source compiled
+# as part of the suit module (sys/suit/perf.c), gated by this pseudomodule's
+# MODULE_ define. See examples/advanced/suit_update/PERFORMANCE.md
+PSEUDOMODULES += suit_perf
 PSEUDOMODULES += sys_bus_%
 PSEUDOMODULES += tiny_strerror_as_strerror
 PSEUDOMODULES += tiny_strerror_minimal

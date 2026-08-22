@@ -37,6 +37,7 @@ Both `info` and AAD must be byte-identical on the wolfCrypt side.
 import argparse
 import os
 import sys
+from contextlib import nullcontext
 
 import cbor2
 from cryptography.hazmat.primitives import serialization
@@ -44,6 +45,25 @@ from cryptography.hazmat.primitives.asymmetric import mlkem
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+# Opt-in host-side perf checkpoints (SUIT_HOST_PERF=1), the producer-side
+# counterpart of the device's SUIT_PERF=1 -- see PERFORMANCE.md section 8.
+# Imported by path so this example still runs standalone outside RIOT, where
+# it degrades to a silent no-op.
+sys.path.append(os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "..", "dist", "tools", "suit")))
+try:
+    from hostperf import perf
+except ImportError:
+    class _NoPerf:
+        def phase(self, *args, **kwargs):
+            return nullcontext()
+
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+    perf = _NoPerf()
 
 COSE_ALG_CHACHA20_POLY1305 = 24
 COSE_TAG_ENCRYPT = 96
@@ -138,15 +158,21 @@ def derive_cek(shared_secret, recipient_protected):
 
 
 def encrypt(device_public_key, alg_id, plaintext):
-    shared_secret, kem_ct = device_public_key.encapsulate()
-
     body_protected = cbor2.dumps({1: COSE_ALG_CHACHA20_POLY1305})
     recipient_protected = cbor2.dumps({1: alg_id})
 
-    cek = derive_cek(shared_secret, recipient_protected)
+    # `mfst_kem` on the device is decapsulation, which internally re-runs
+    # encapsulation for the FIPS 203 implicit-rejection check. This is that
+    # encapsulation on its own, plus the same HKDF -- so the host/device
+    # ratio for this phase is the interesting one.
+    with perf.phase('mfst_kem'):
+        shared_secret, kem_ct = device_public_key.encapsulate()
+        cek = derive_cek(shared_secret, recipient_protected)
+
     nonce = os.urandom(12)
-    ciphertext = ChaCha20Poly1305(cek).encrypt(
-        nonce, plaintext, enc_structure(body_protected))
+    with perf.phase('mfst_aead', nbytes=len(plaintext)):
+        ciphertext = ChaCha20Poly1305(cek).encrypt(
+            nonce, plaintext, enc_structure(body_protected))
 
     cose_encrypt = cbor2.CBORTag(COSE_TAG_ENCRYPT, [
         body_protected,
@@ -178,6 +204,8 @@ def main(args):
     key_file = args.key or f"device_mlkem{args.level}.pem"
     print(f"SUIT manifest encryption (ML-KEM-{args.level} + HKDF-SHA256 + "
           "ChaCha20-Poly1305) - START")
+    perf.set_tool('encrypt-manifest')
+    perf.set_algos(kem=f'ml-kem-{args.level}')
 
     device_key = device_keypair(key_file, level["key_cls"])
 
@@ -193,6 +221,9 @@ def main(args):
     write_file(args.output, cose_bytes)
     print(f"Wrote {args.output}: {len(cose_bytes)} bytes "
           f"(container overhead {len(cose_bytes) - len(plaintext)} bytes)")
+    # Same figure the device reports as `mfst_cose` bytes: the COSE_Encrypt
+    # container overhead, which is where the KEM's wire cost shows up.
+    perf.count('mfst_cose', len(cose_bytes) - len(plaintext))
 
     # Headers for the self-contained C sample
     write_file("encrypted.h", format_byte_array("cose_encrypt", cose_bytes))

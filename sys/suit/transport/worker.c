@@ -35,6 +35,7 @@
 #include "periph/pm.h"
 #include "ztimer.h"
 
+#include "suit/perf.h"
 #include "suit/transport/worker.h"
 
 #ifdef MODULE_SUIT_TRANSPORT_COAP
@@ -81,6 +82,11 @@
 #define SUIT_MANIFEST_BUFSIZE   640
 #endif
 
+/* hand the two sizes that bound this file's static footprint to the perf
+ * module, so its boot-time report states the values actually built with
+ * instead of re-deriving the defaults above */
+SUIT_PERF_DEFINE_WORKER_SIZES(SUIT_MANIFEST_BUFSIZE, SUIT_WORKER_STACKSIZE);
+
 static char _stack[SUIT_WORKER_STACKSIZE];
 static char _url[CONFIG_SOCK_URLPATH_MAXLEN];
 static ssize_t _size;
@@ -94,6 +100,8 @@ int suit_handle_url(const char *url)
 {
     ssize_t size;
     LOG_INFO("suit_worker: downloading \"%s\"\n", url);
+
+    suit_perf_begin(SUIT_PERF_MFST_FETCH);
 
     if (0) {}
 #ifdef MODULE_SUIT_TRANSPORT_COAP
@@ -115,10 +123,16 @@ int suit_handle_url(const char *url)
         return -ENOTSUP;
     }
 
+    suit_perf_end(SUIT_PERF_MFST_FETCH);
+
     if (size < 0) {
         LOG_INFO("suit_worker: error getting manifest\n");
         return size;
     }
+
+    /* the manifest as it arrives on the wire, i.e. including the
+     * COSE_Encrypt wrapper and the tier's signature */
+    suit_perf_count(SUIT_PERF_MFST_FETCH, size);
 
     LOG_INFO("suit_worker: got manifest with size %" PRIdSIZE "\n", size);
 
@@ -158,7 +172,12 @@ int suit_handle_manifest_buf(const uint8_t *buffer, size_t size)
     manifest.urlbuf_len = CONFIG_SOCK_URLPATH_MAXLEN;
 
     int res;
-    if ((res = suit_parse(&manifest, buffer, size)) != SUIT_OK) {
+    /* envelope timer: signature verification, the command sequences, and
+     * with them the whole payload fetch/decrypt/store happen inside here */
+    suit_perf_begin(SUIT_PERF_PARSE);
+    res = suit_parse(&manifest, buffer, size);
+    suit_perf_end(SUIT_PERF_PARSE);
+    if (res != SUIT_OK) {
         LOG_INFO("suit_worker: suit_parse() failed. res=%i\n", res);
         return res;
     }
@@ -168,7 +187,10 @@ int suit_handle_manifest_buf(const uint8_t *buffer, size_t size)
     riotboot_hdr_print(hdr);
     ztimer_sleep(ZTIMER_MSEC, 1 * MS_PER_SEC);
 
-    return riotboot_hdr_validate(hdr);
+    suit_perf_begin(SUIT_PERF_HDR_VALIDATE);
+    res = riotboot_hdr_validate(hdr);
+    suit_perf_end(SUIT_PERF_HDR_VALIDATE);
+    return res;
 #endif
 
     return res;
@@ -195,12 +217,21 @@ static void *_suit_worker_thread(void *arg)
 
     LOG_INFO("suit_worker: started.\n");
 
+    /* _stack is private to this file, so this is the only place that can
+     * hand it to the stack-usage accounting */
+    suit_perf_run_start(_stack, SUIT_WORKER_STACKSIZE);
+    suit_perf_begin(SUIT_PERF_TOTAL);
+
     int res;
     if (_url[0] == '\0') {
         res = suit_handle_manifest_buf(_manifest_buf, _size);
     } else {
         res = suit_handle_url(_url);
     }
+
+    suit_perf_end(SUIT_PERF_TOTAL);
+    /* before the callback: on flashwrite boards it reboots on success */
+    suit_perf_report();
 
     suit_worker_done_cb(res);
 

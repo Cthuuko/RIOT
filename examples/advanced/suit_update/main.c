@@ -28,6 +28,7 @@
 #include "riotboot/slot.h"
 #endif
 
+#include "suit/perf.h"
 #include "suit/storage.h"
 #include "suit/storage/ram.h"
 #ifdef CPU_NATIVE
@@ -171,9 +172,34 @@ static int cmd_lsstorage(int argc, char **argv)
 
 SHELL_COMMAND(lsstorage, "Print the available storage paths", cmd_lsstorage);
 
+#if IS_USED(MODULE_SUIT_PERF)
+static int cmd_suit_perf(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    /* Config first, then the last run's report. The config line is otherwise
+     * only printed at boot, and on this board a successful update reboots
+     * through a USB re-enumeration that kills the serial terminal before the
+     * new slot's banner reaches it -- so running this after reconnecting is
+     * the only reliable way to capture PERFCFG. The report is a re-print,
+     * useful for runs that ended in an error or on RAM/VFS storage. */
+    suit_perf_config_report();
+    suit_perf_report();
+    return 0;
+}
+
+SHELL_COMMAND(suit_perf, "Re-print the last SUIT update's perf report",
+              cmd_suit_perf);
+#endif
+
 int main(void)
 {
     puts("RIOT SUIT update example application");
+
+    /* identifies which crypto tier this image was built for, so a captured
+     * log stands on its own (see PERFORMANCE.md) */
+    suit_perf_config_report();
 
 #if defined(MODULE_PERIPH_GPIO_IRQ) && defined(BTN0_PIN)
     /* initialize a button to manually trigger an update */

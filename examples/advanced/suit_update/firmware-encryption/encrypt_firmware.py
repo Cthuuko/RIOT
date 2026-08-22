@@ -36,6 +36,7 @@ import argparse
 import io
 import os
 import sys
+from contextlib import nullcontext
 
 import cbor2
 from cryptography.hazmat.primitives import serialization
@@ -54,6 +55,25 @@ except ImportError:
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+# Opt-in host-side perf checkpoints (SUIT_HOST_PERF=1), the producer-side
+# counterpart of the device's SUIT_PERF=1 -- see PERFORMANCE.md section 8.
+# Imported by path so this example still runs standalone outside RIOT, where
+# it degrades to a silent no-op.
+sys.path.append(os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "..", "dist", "tools", "suit")))
+try:
+    from hostperf import perf
+except ImportError:
+    class _NoPerf:
+        def phase(self, *args, **kwargs):
+            return nullcontext()
+
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+    perf = _NoPerf()
 
 COSE_ALG_CHACHA20_POLY1305 = 24
 COSE_ALG_ECDH_ES_HKDF_256 = -25
@@ -159,6 +179,7 @@ def make_recipient(device_public_key):
     recipient's ciphertext field (see manifest-encryption-mlkem/README.md).
     """
     if isinstance(device_public_key, X25519PublicKey):
+        perf.set_algos(kem='x25519')
         ephemeral = X25519PrivateKey.generate()
         shared_secret = ephemeral.exchange(device_public_key)
         recipient_protected = cbor2.dumps({1: COSE_ALG_ECDH_ES_HKDF_256})
@@ -170,29 +191,38 @@ def make_recipient(device_public_key):
     if mlkem is not None and isinstance(device_public_key,
                                         mlkem.MLKEM768PublicKey):
         alg_id = COSE_ALG_MLKEM768
+        perf.set_algos(kem='ml-kem-768')
     elif mlkem is not None and isinstance(device_public_key,
                                           mlkem.MLKEM1024PublicKey):
         alg_id = COSE_ALG_MLKEM1024
+        perf.set_algos(kem='ml-kem-1024')
     else:
         raise SystemExit(f"unsupported device key type: "
                          f"{type(device_public_key).__name__}")
-    shared_secret, kem_ct = device_public_key.encapsulate()
     recipient_protected = cbor2.dumps({1: alg_id})
+    shared_secret, kem_ct = device_public_key.encapsulate()
     return shared_secret, [recipient_protected, {}, kem_ct]
 
 
 def encrypt(device_public_key, plaintext):
     """Return header || ciphertext || tag (detached-ciphertext container)."""
-    shared_secret, recipient = make_recipient(device_public_key)
-    recipient_protected = recipient[0]
-
     body_protected = cbor2.dumps({1: COSE_ALG_CHACHA20_POLY1305})
 
-    cek = derive_cek(shared_secret, recipient_protected)
+    # Producer half of the device's `payload_kem`, scoped identically to
+    # `mfst_kem` in the manifest tools: key agreement plus the HKDF that
+    # turns the shared secret into the CEK.
+    with perf.phase('payload_kem'):
+        shared_secret, recipient = make_recipient(device_public_key)
+        recipient_protected = recipient[0]
+        cek = derive_cek(shared_secret, recipient_protected)
+
     nonce = os.urandom(12)
-    # cryptography returns ciphertext||tag — exactly the detached stream
-    ct_and_tag = ChaCha20Poly1305(cek).encrypt(
-        nonce, plaintext, enc_structure(body_protected))
+    # cryptography returns ciphertext||tag — exactly the detached stream.
+    # One shot here against 3,400+ streamed chunks on the device: the same
+    # ChaCha20-Poly1305, in the two shapes PERFORMANCE.md section 2C names.
+    with perf.phase('payload_aead', nbytes=len(plaintext)):
+        ct_and_tag = ChaCha20Poly1305(cek).encrypt(
+            nonce, plaintext, enc_structure(body_protected))
 
     header = cbor2.dumps(cbor2.CBORTag(COSE_TAG_ENCRYPT, [
         body_protected,
@@ -239,6 +269,7 @@ def test_payload():
 def main(args):
     print("SUIT firmware encryption (X25519 + HKDF-SHA256 + "
           "ChaCha20-Poly1305, detached ciphertext) - START")
+    perf.set_tool('encrypt-firmware')
 
     write_headers = not args.no_headers
     device_key = device_keypair(args.key, write_headers)
@@ -256,6 +287,10 @@ def main(args):
     write_file(args.output, blob)
     print(f"Wrote {args.output}: {len(blob)} bytes "
           f"(header {len(header)} + ciphertext {len(plaintext)} + tag 16)")
+    # The device prints this as `suit: decrypting payload (header N bytes)`:
+    # 74 B for X25519, 1,126 B for ML-KEM-768. Recorded here so the KEM's
+    # second wire cost per update is in the host CSV too.
+    perf.count('payload_hdr', len(header))
 
     if write_headers:
         # Headers for the self-contained C sample

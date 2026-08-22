@@ -32,6 +32,7 @@
 #include "kernel_defines.h"
 #include "suit/conditions.h"
 #include "suit/handlers.h"
+#include "suit/perf.h"
 #include "suit/policy.h"
 #include "suit/storage.h"
 #include "suit.h"
@@ -389,13 +390,32 @@ static int _storage_helper(void *arg, size_t offset, uint8_t *buf, size_t len,
 
     _print_download_progress(manifest, offset, len, image_size);
 
+    suit_perf_begin(SUIT_PERF_STORAGE_WRITE);
     int res = suit_storage_write(comp->storage_backend, manifest, buf, offset, len);
     if (!more) {
         LOG_INFO("Finalizing payload store\n");
         /* Finalize the write if no more data available */
         res = suit_storage_finish(comp->storage_backend, manifest);
     }
+    suit_perf_end(SUIT_PERF_STORAGE_WRITE);
+    suit_perf_count(SUIT_PERF_STORAGE_WRITE, len);
     return res;
+}
+#endif
+
+#if IS_USED(MODULE_SUIT_PERF) && \
+    (defined(MODULE_SUIT_TRANSPORT_COAP) || defined(MODULE_SUIT_TRANSPORT_VFS))
+/* Counts transport blocks and wire bytes without timing them: the fetch's
+ * own timer already covers the transfer, and re-timing here would attribute
+ * the decrypt/store work done inside the callback to the network. Single
+ * static instance, as the SUIT worker is single-threaded. */
+static coap_blockwise_cb_t _perf_fetch_inner;
+
+static int _perf_fetch_cb(void *arg, size_t offset, uint8_t *buf, size_t len,
+                          int more)
+{
+    suit_perf_count(SUIT_PERF_PAYLOAD_FETCH, len);
+    return _perf_fetch_inner(arg, offset, buf, len, more);
 }
 #endif
 
@@ -459,7 +479,19 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
 #endif
 #endif
 
+#if IS_USED(MODULE_SUIT_PERF) && \
+    (defined(MODULE_SUIT_TRANSPORT_COAP) || defined(MODULE_SUIT_TRANSPORT_VFS))
+    /* Outermost callback, so it sees the payload exactly as it arrives: the
+     * ciphertext plus its COSE header in an encrypted build, the plain image
+     * otherwise. Counting here rather than in the decryptor keeps the wire
+     * figure comparable across encrypted and plaintext runs. */
+    _perf_fetch_inner = fetch_cb;
+    fetch_cb = _perf_fetch_cb;
+#endif
+
     res = -1;
+
+    suit_perf_begin(SUIT_PERF_PAYLOAD_FETCH);
 
     if (0) {}
 #ifdef MODULE_SUIT_TRANSPORT_COAP
@@ -482,8 +514,11 @@ static int _dtv_fetch(suit_manifest_t *manifest, int key,
 #endif
     else {
         LOG_WARNING("suit: unsupported URL scheme!\n)");
+        suit_perf_end(SUIT_PERF_PAYLOAD_FETCH);
         return res;
     }
+
+    suit_perf_end(SUIT_PERF_PAYLOAD_FETCH);
 
     suit_component_set_flag(comp, SUIT_COMPONENT_STATE_FETCHED);
 
@@ -525,6 +560,11 @@ static int _validate_payload(suit_component_t *component, const uint8_t *digest,
     uint8_t payload_digest[SHA256_DIGEST_LENGTH];
     suit_storage_t *storage = component->storage_backend;
 
+    /* tier-invariant, and on flash-backed storage this reads the whole slot
+     * back: as much a storage-read benchmark as a hashing one */
+    suit_perf_begin(SUIT_PERF_IMAGE_DIGEST);
+    suit_perf_count(SUIT_PERF_IMAGE_DIGEST, payload_size);
+
     if (suit_storage_has_readptr(storage)) {
         /* Direct read possible */
         const uint8_t *payload = NULL;
@@ -532,6 +572,7 @@ static int _validate_payload(suit_component_t *component, const uint8_t *digest,
 
         suit_storage_read_ptr(storage, &payload, &payload_len);
         if (payload_size != payload_len) {
+            suit_perf_end(SUIT_PERF_IMAGE_DIGEST);
             return SUIT_ERR_STORAGE_EXCEEDED;
         }
         sha256(payload, payload_len, payload_digest);
@@ -554,6 +595,7 @@ static int _validate_payload(suit_component_t *component, const uint8_t *digest,
         }
         sha256_final(&ctx, payload_digest);
     }
+    suit_perf_end(SUIT_PERF_IMAGE_DIGEST);
 
     return (memcmp(digest, payload_digest, SHA256_DIGEST_LENGTH) == 0) ?
         SUIT_OK : SUIT_ERR_DIGEST_MISMATCH;

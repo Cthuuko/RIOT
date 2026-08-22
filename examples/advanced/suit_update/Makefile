@@ -196,6 +196,25 @@ ifeq (1,$(SUIT_FIRMWARE_ENCRYPT))
   USEMODULE += suit_firmware_encrypt
 endif
 
+# Performance/memory checkpoints along the update path: OFF by default,
+# because enabling them changes the very numbers the combination matrices
+# report. SUIT_PERF=1 adds ztimer_usec, malloc_monitor and the per-phase
+# record table, so an instrumented build's `size` output must never be quoted
+# against DEVICE_*.md / CRYPTO_TIERS.md - and the near-zero-margin samr21 rows
+# (48 B / 88 B spare) will not link with it at all. Timing/memory results and
+# the capture procedure live in PERFORMANCE.md.
+SUIT_PERF ?= 0
+ifeq (1,$(SUIT_PERF))
+  USEMODULE += suit_perf
+  # The worker stack high-water mark is read from the canary thread_create()
+  # writes, which only happens with DEVELHELP, MODULE_TEST_UTILS_PRINT_STACK_USAGE
+  # or this flag (core/thread.c). This is the cheapest of the three: it adds
+  # the stack fill and thread->stack_start, nothing else. Without it the
+  # measurement is silently meaningless rather than absent, hence forcing it
+  # here rather than documenting it as a prerequisite.
+  CFLAGS += -DSCHED_TEST_STACK=1
+endif
+
 # enable VFS transport (only works on boards with external storage)
 USEMODULE += suit_transport_vfs
 USEMODULE += vfs_default

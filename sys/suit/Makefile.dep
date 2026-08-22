@@ -54,6 +54,17 @@ ifneq (,$(filter suit_transport_%, $(USEMODULE)))
   USEMODULE += suit_transport_worker
 endif
 
+# performance/memory checkpoints: microsecond timing for the crypto phases
+# (ztimer_msec, pulled in by the CoAP transport below, is far too coarse for
+# an Ed25519 verification) and heap accounting to show at runtime that the
+# wolfCrypt WOLFSSL_NO_MALLOC configuration really does keep ML-KEM off the
+# heap. The stack canary this module reads additionally needs
+# -DSCHED_TEST_STACK=1, set next to USEMODULE += suit_perf by the application.
+ifneq (,$(filter suit_perf, $(USEMODULE)))
+  USEMODULE += ztimer_usec
+  USEMODULE += malloc_monitor
+endif
+
 ifneq (,$(filter suit_transport_coap, $(USEMODULE)))
   USEMODULE += nanocoap_sock
   USEMODULE += ztimer_msec

@@ -32,6 +32,7 @@
 
 #include "log.h"
 #include "suit/manifest_encrypt.h"
+#include "suit/perf.h"
 
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/hmac.h>
@@ -416,13 +417,23 @@ int suit_manifest_decrypt(uint8_t *buf, size_t size,
         return SUIT_MANIFEST_ENCRYPT_PASSTHROUGH;
     }
 
-    if (suit_cose_encrypt_parse(buf, size, &msg) < 0 ||
+    suit_perf_begin(SUIT_PERF_MFST_COSE);
+    ssize_t hdr_len = suit_cose_encrypt_parse(buf, size, &msg);
+    suit_perf_end(SUIT_PERF_MFST_COSE);
+    if (hdr_len < 0 ||
         msg.ciphertext == NULL /* detached container: not a manifest */) {
         LOG_INFO("suit: COSE_Encrypt parsing failed\n");
         return -1;
     }
 
+    /* wire overhead of the recipient structure: ~92 B for X25519, ~1144 B
+     * once the KEM ciphertext is in there (CRYPTO_TIERS.md §2) */
+    suit_perf_count(SUIT_PERF_MFST_COSE, size - msg.ciphertext_len);
+
+    suit_perf_begin(SUIT_PERF_MFST_KEM);
     ret = suit_cose_derive_cek(&msg, cek);
+    suit_perf_end(SUIT_PERF_MFST_KEM);
+    suit_perf_stack_sample(SUIT_PERF_MFST_KEM);
     if (ret != 0) {
         LOG_INFO("suit: manifest CEK derivation failed: %d\n", ret);
         return ret;
@@ -435,11 +446,14 @@ int suit_manifest_decrypt(uint8_t *buf, size_t size,
 
     /* in-place: ChaCha20 is a stream cipher, the tag is checked over the
      * ciphertext before/while it is overwritten with plaintext */
+    suit_perf_begin(SUIT_PERF_MFST_AEAD);
     ret = wc_ChaCha20Poly1305_Decrypt(cek, msg.nonce, aad, (word32)aad_len,
                                       msg.ciphertext,
                                       (word32)msg.ciphertext_len,
                                       msg.auth_tag,
                                       (byte *)msg.ciphertext);
+    suit_perf_end(SUIT_PERF_MFST_AEAD);
+    suit_perf_count(SUIT_PERF_MFST_AEAD, msg.ciphertext_len);
     memset(cek, 0, sizeof(cek));
     if (ret != 0) {
         LOG_INFO("suit: manifest decryption failed: %d\n", ret);

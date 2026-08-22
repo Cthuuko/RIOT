@@ -34,6 +34,7 @@
 
 #include "log.h"
 #include "suit/firmware_encrypt.h"
+#include "suit/perf.h"
 
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/chacha20_poly1305.h>
@@ -95,8 +96,13 @@ static int _feed_ciphertext(payload_decrypt_state_t *s, void *arg,
 
         if (from_pending > 0) {
             uint8_t tmp[TAG_LEN];
-            if (wc_ChaCha20Poly1305_UpdateData(&s->aead, s->pending, tmp,
-                                               (word32)from_pending) != 0) {
+            suit_perf_begin(SUIT_PERF_PAYLOAD_AEAD);
+            int aead_res = wc_ChaCha20Poly1305_UpdateData(&s->aead, s->pending,
+                                                          tmp,
+                                                          (word32)from_pending);
+            suit_perf_end(SUIT_PERF_PAYLOAD_AEAD);
+            suit_perf_count(SUIT_PERF_PAYLOAD_AEAD, from_pending);
+            if (aead_res != 0) {
                 return -1;
             }
             if (s->inner(arg, s->pt_off, tmp, from_pending, 1) < 0) {
@@ -111,8 +117,12 @@ static int _feed_ciphertext(payload_decrypt_state_t *s, void *arg,
         size_t from_data = n - from_pending;
         if (from_data > 0) {
             /* in place: input and output may alias for ChaCha20 */
-            if (wc_ChaCha20Poly1305_UpdateData(&s->aead, data, data,
-                                               (word32)from_data) != 0) {
+            suit_perf_begin(SUIT_PERF_PAYLOAD_AEAD);
+            int aead_res = wc_ChaCha20Poly1305_UpdateData(&s->aead, data, data,
+                                                          (word32)from_data);
+            suit_perf_end(SUIT_PERF_PAYLOAD_AEAD);
+            suit_perf_count(SUIT_PERF_PAYLOAD_AEAD, from_data);
+            if (aead_res != 0) {
                 return -1;
             }
             if (s->inner(arg, s->pt_off, data, from_data, 1) < 0) {
@@ -178,7 +188,12 @@ int suit_payload_decrypt_helper(void *arg, size_t offset, uint8_t *buf,
         uint8_t cek[CHACHA20_POLY1305_AEAD_KEYSIZE];
         uint8_t aad[64];
         size_t aad_len;
+        suit_perf_begin(SUIT_PERF_PAYLOAD_KEM);
         int ret = suit_cose_derive_cek(&msg, cek);
+        suit_perf_end(SUIT_PERF_PAYLOAD_KEM);
+        /* deepest point of the call chain: worker -> parse -> fetch ->
+         * transport callback -> decapsulation */
+        suit_perf_stack_sample(SUIT_PERF_PAYLOAD_KEM);
         if (ret != 0) {
             LOG_INFO("suit: payload CEK derivation failed: %d\n", ret);
             goto fail;
@@ -216,8 +231,13 @@ int suit_payload_decrypt_helper(void *arg, size_t offset, uint8_t *buf,
             LOG_INFO("suit: payload stream truncated\n");
             goto fail;
         }
-        if (wc_ChaCha20Poly1305_Final(&s->aead, computed) != 0 ||
-            wc_ChaCha20Poly1305_CheckTag(computed, s->pending) != 0) {
+        suit_perf_begin(SUIT_PERF_PAYLOAD_AEAD);
+        int tag_res = wc_ChaCha20Poly1305_Final(&s->aead, computed);
+        if (tag_res == 0) {
+            tag_res = wc_ChaCha20Poly1305_CheckTag(computed, s->pending);
+        }
+        suit_perf_end(SUIT_PERF_PAYLOAD_AEAD);
+        if (tag_res != 0) {
             LOG_INFO("suit: payload authentication failed\n");
             goto fail;
         }
